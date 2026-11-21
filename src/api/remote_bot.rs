@@ -285,22 +285,28 @@ async fn send_forum_report(path: &std::path::Path, report: Value) -> std::io::Re
     use std::os::unix::fs::{FileTypeExt, MetadataExt};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-    let parent = path
-        .parent()
-        .ok_or_else(|| std::io::Error::other("forum reporter directory unavailable"))?;
-    let directory = std::fs::symlink_metadata(parent)?;
-    let socket = std::fs::symlink_metadata(path)?;
-    let owner = unsafe { libc::geteuid() };
-    if !directory.is_dir()
-        || directory.uid() != owner
-        || directory.mode() & 0o077 != 0
-        || !socket.file_type().is_socket()
-        || socket.uid() != owner
-    {
-        return Err(std::io::Error::other(
-            "private forum reporter socket required",
-        ));
-    }
+    let checked = path.to_path_buf();
+    tokio::task::spawn_blocking(move || {
+        let parent = checked
+            .parent()
+            .ok_or_else(|| std::io::Error::other("forum reporter directory unavailable"))?;
+        let directory = std::fs::symlink_metadata(parent)?;
+        let socket = std::fs::symlink_metadata(&checked)?;
+        let owner = unsafe { libc::geteuid() };
+        if !directory.is_dir()
+            || directory.uid() != owner
+            || directory.mode() & 0o077 != 0
+            || !socket.file_type().is_socket()
+            || socket.uid() != owner
+        {
+            return Err(std::io::Error::other(
+                "private forum reporter socket required",
+            ));
+        }
+        Ok(())
+    })
+    .await
+    .map_err(std::io::Error::other)??;
     let mut stream = tokio::net::UnixStream::connect(path).await?;
     let mut body = report.to_string();
     body.push('\n');

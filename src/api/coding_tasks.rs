@@ -130,7 +130,10 @@ pub(super) async fn run(
                             let result =
                                 result.unwrap_or_else(|_| json!({"version":1,"state":"unknown"}));
                             if result["state"] != "idle" {
-                                *lock(&state.coding_status) = json!({"identity":context["identity"],"workspace":context["workspace"],"result":result});
+                                *lock(&state.coding_status) = json!({
+                                    "identity": context["identity"], "workspace": context["workspace"],
+                                    "result": result, "consent_word": consent.word, "resume_seq": consent.resume_seq,
+                                });
                             }
                         }
                     }

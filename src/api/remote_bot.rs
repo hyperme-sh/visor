@@ -280,6 +280,28 @@ fn forum_report(
     ))
 }
 
+fn local_report_consent(saved: &Value, report: &Value) -> Option<tasks::Consent> {
+    if saved["result"]["task_id"] != report["taskId"] || !report["taskId"].is_string() {
+        return None;
+    }
+    let identity = &saved["identity"];
+    for (field, projected) in [
+        ("tenant_id", "tenant"),
+        ("bot_id", "botId"),
+        ("assignment_id", "assignmentId"),
+        ("session_id", "sessionId"),
+    ] {
+        if !identity[field].is_string() || identity[field] != report[projected] {
+            return None;
+        }
+    }
+    Some(tasks::Consent {
+        session: Uuid::parse_str(report["sessionId"].as_str()?).ok()?,
+        word: saved["consent_word"].as_u64()?,
+        resume_seq: saved["resume_seq"].as_u64()?,
+    })
+}
+
 #[cfg(unix)]
 async fn send_forum_report(path: &std::path::Path, report: Value) -> std::io::Result<()> {
     use std::os::unix::fs::{FileTypeExt, MetadataExt};
@@ -366,6 +388,7 @@ async fn poll(
     let mut active: Option<(String, String)> = None;
     let mut remote: Option<RemoteClaim> = None;
     let mut reported = std::collections::HashSet::new();
+    let mut report_permits = std::collections::HashMap::new();
     loop {
         if *stop.borrow() {
             return Ok(());
@@ -480,9 +503,11 @@ async fn poll(
                 if client.settings.forum_prompt && remote_forum_prompt(task) {
                     let task_id = serde_json::from_value(task["id"].clone())
                         .map_err(|_| "invalid remote-agent task ID")?;
+                    let delivery = delivery_id(task).ok_or("invalid forum delivery ID")?;
+                    report_permits.insert(delivery, consent_word);
                     remote = Some(RemoteClaim {
                         task: task_id,
-                        delivery: delivery_id(task).ok_or("invalid forum delivery ID")?,
+                        delivery,
                         consent: consent_word,
                     });
                 } else if task["capability"] == "desktop" {
@@ -506,9 +531,8 @@ async fn poll(
                 }
             }
         }
-        if let (Some(path), Some(permit), Some(items)) = (
+        if let (Some(path), Some(items)) = (
             &client.settings.forum_reporter_socket,
-            consent_word,
             status["tasks"].as_array(),
         ) {
             let now = SystemTime::now()
@@ -517,9 +541,26 @@ async fn poll(
                 .as_secs_f64();
             let next = items
                 .iter()
-                .filter_map(|task| forum_report(&status, task, session, client.connection, now))
-                .find(|(delivery, _)| !reported.contains(delivery));
-            if let Some((delivery, report)) = next {
+                .filter_map(|task| {
+                    let (delivery, report) =
+                        forum_report(&status, task, session, client.connection, now)?;
+                    if reported.contains(&delivery) {
+                        return None;
+                    }
+                    let permit = report_permits.get(&delivery).copied().or_else(|| {
+                        if task["forum"]["kind"] != "local" {
+                            return None;
+                        }
+                        let permit = local_report_consent(&lock(&state.coding_status), &report)?;
+                        report_permits.insert(delivery, permit);
+                        Some(permit)
+                    })?;
+                    permit
+                        .matches(&lock(&state.automation))
+                        .then_some((delivery, report, permit))
+                })
+                .next();
+            if let Some((delivery, report, permit)) = next {
                 if consent && report_while_consented(path, report, &state, permit).await {
                     reported.insert(delivery);
                 }
@@ -618,6 +659,36 @@ mod tests {
         assert!(forum_report(&status, &task, session, Uuid::new_v4(), 100.0).is_none());
         task["status"] = json!("queued");
         assert!(forum_report(&status, &task, session, connection, 100.0).is_none());
+    }
+
+    #[test]
+    fn terminal_report_cannot_reuse_a_delivery_after_pause_and_resume() {
+        let session = Uuid::new_v4();
+        let assignment = Uuid::new_v4();
+        let tenant = Uuid::new_v4();
+        let bot = Uuid::new_v4();
+        let task = Uuid::new_v4();
+        let mut gate = automation::Gate::default();
+        gate.control(Some(session), automation::Control::Start)
+            .unwrap();
+        let original = tasks::Consent::capture(&gate, session);
+        let report = json!({"taskId":task,"sessionId":session,"assignmentId":assignment,"tenant":tenant,"botId":bot});
+        let saved = json!({"identity":{"tenant_id":tenant,"bot_id":bot,"session_id":session,"assignment_id":assignment},
+            "result":{"task_id":task},"consent_word":original.word,"resume_seq":original.resume_seq});
+        assert!(local_report_consent(&saved, &report)
+            .unwrap()
+            .matches(&gate));
+        gate.control(Some(session), automation::Control::Pause)
+            .unwrap();
+        gate.control(Some(session), automation::Control::Resume)
+            .unwrap();
+        assert!(!original.matches(&gate));
+        assert!(!local_report_consent(&saved, &report)
+            .unwrap()
+            .matches(&gate));
+        let mut wrong = report;
+        wrong["assignmentId"] = json!(Uuid::new_v4());
+        assert!(local_report_consent(&saved, &wrong).is_none());
     }
 
     #[test]

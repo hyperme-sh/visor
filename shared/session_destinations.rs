@@ -51,6 +51,16 @@ pub fn configured(dir: &Path, session: &str, destination: Destination) -> Result
     resolve(value, destination)
 }
 
+fn squad_task_query(path: &str, query: &str) -> bool {
+    let Some(task) = query.strip_prefix("task=") else {
+        return false;
+    };
+    path == "/feed/squad/live"
+        && canonical_session(task).as_deref() == Some(task)
+        && matches!(task.as_bytes()[14], b'1'..=b'8')
+        && matches!(task.as_bytes()[19], b'8' | b'9' | b'a' | b'b')
+}
+
 fn resolve(value: &str, destination: Destination) -> Result<Launch, String> {
     if value.len() > 4096 || value.chars().any(char::is_control) {
         return Err("Invalid session destination".into());
@@ -62,11 +72,11 @@ fn resolve(value: &str, destination: Destination) -> Result<Launch, String> {
                 || url.host_str().is_none()
                 || !url.username().is_empty()
                 || url.password().is_some()
-                || url.query().is_some()
+                || url.query().is_some_and(|query| !squad_task_query(url.path(), query))
                 || url.fragment().is_some()
             {
                 return Err(
-                    "Forum destination must be HTTPS without credentials, query or fragment".into(),
+                    "Forum destination must be HTTPS without credentials or fragments. Only Squad task links may include a query.".into(),
                 );
             }
             Ok(Launch {
@@ -120,6 +130,23 @@ mod tests {
             }
         );
     }
+    #[test]
+    fn forum_allows_only_the_canonical_squad_task_query() {
+        let task = "227c4510-9847-47c4-84ac-11cdf847099c";
+        let url = format!("https://forum.example.test/feed/squad/live?task={task}");
+        assert_eq!(resolve(&url, Destination::Forum).unwrap().argument, url);
+        for value in [
+            format!("https://forum.example.test/t/1?task={task}"),
+            format!("{url}&token=x"),
+            format!("{url}&task={task}"),
+            format!("{url}#fragment"),
+            format!("https://forum.example.test/feed/squad/live?task={}", task.to_uppercase()),
+            "https://forum.example.test/feed/squad/live?task=00000000-0000-0000-0000-000000000000".into(),
+        ] {
+            assert!(resolve(&value, Destination::Forum).is_err(), "{value}");
+        }
+    }
+
     #[test]
     fn workspace_is_a_literal_absolute_directory() {
         assert!(resolve("--install-extension", Destination::Editor).is_err());

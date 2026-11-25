@@ -14,8 +14,10 @@ workspace = "/home/you/projects/your-workspace"
 
 Use the UUID of the session shown by Visor. Missing configuration produces a
 setup message; an action never falls back to another session. Forum URLs must
-use HTTPS without embedded credentials, query strings or fragments. Opening a
-forum uses the desktop browser's own login; Visor does not append credentials.
+use HTTPS without embedded credentials or fragments. A Squad project link can
+include the single `task` query parameter on `/feed/squad/live`. Its value must
+be the canonical task UUID from Squad. The desktop browser uses its own login,
+and Squad checks the user's current access before displaying the task.
 The workspace must be an existing absolute directory, and VS Code's `code`
 command must be available. Both actions pass one literal argument without a
 shell or command template. Session purpose, task payload and model output do

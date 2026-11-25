@@ -22,9 +22,23 @@ internal static class Destinations
                 throw new InvalidOperationException("Workspace must be an existing absolute directory");
         }
         else if (!Uri.TryCreate(text, UriKind.Absolute, out var uri) || uri.Scheme != "https" ||
-            string.IsNullOrEmpty(uri.Host) || uri.UserInfo.Length != 0 || uri.Query.Length != 0 || uri.Fragment.Length != 0)
+            string.IsNullOrEmpty(uri.Host) || uri.UserInfo.Length != 0 || uri.Fragment.Length != 0 ||
+            !ForumQuery(uri, text))
             throw new InvalidOperationException("Invalid forum URL");
         return text;
+    }
+
+    private static bool ForumQuery(Uri uri, string text)
+    {
+        int start = text.IndexOf('?');
+        if (start < 0)
+            return true;
+        string query = text[(start + 1)..];
+        if (uri.AbsolutePath != "/feed/squad/live" || !query.StartsWith("task=", StringComparison.Ordinal))
+            return false;
+        string task = query[5..];
+        return Guid.TryParseExact(task, "D", out Guid id) && task == id.ToString("D") &&
+            task[14] is >= '1' and <= '8' && task[19] is '8' or '9' or 'a' or 'b';
     }
 
     internal static ProcessStartInfo EditorPlan(string executable, string workspace)

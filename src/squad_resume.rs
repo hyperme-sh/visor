@@ -10,7 +10,7 @@ const MAX_BEARER_BYTES: usize = 8192;
 const MAX_CONTEXT_BYTES: usize = 16 * 1024;
 const MAX_ARTIFACT_BYTES: usize = 384 * 1024;
 const MAX_CURSOR: u64 = (1 << 53) - 1;
-const USAGE: &str = "usage: hypermesh-visor squad-resume HTTPS_ORIGIN FORUM PLANE_TASK_ID AGENT [CURSOR SQUAD_TASK_ID [--sources BRIEF_REVISION WORKBOOK_REVISION]]";
+const USAGE: &str = "usage: hypermesh-visor squad-resume HTTPS_ORIGIN FORUM PLANE_TASK_ID AGENT [CURSOR SQUAD_TASK_ID [--sources BRIEF_REVISION WORKBOOK_REVISION [--preview-base PREVIEW_REVISION]]]";
 
 struct ResumeRequest {
     url: Url,
@@ -25,6 +25,7 @@ struct ResumeRequest {
 struct RevisionSources {
     brief: String,
     workbook: String,
+    preview_base: Option<String>,
 }
 
 fn canonical_id(value: &str) -> bool {
@@ -54,19 +55,27 @@ impl ResumeRequest {
                 Some(task.clone()),
                 None,
             ),
-            [zero, task, flag, brief, workbook]
+            [zero, task, flag, brief, workbook, preview @ ..]
                 if zero == "0"
                     && flag == "--sources"
                     && canonical_id(task)
                     && canonical_id(brief)
                     && canonical_id(workbook) =>
             {
+                let preview_base = match preview {
+                    [] => None,
+                    [flag, revision] if flag == "--preview-base" && canonical_id(revision) => {
+                        Some(revision.clone())
+                    }
+                    _ => return Err(USAGE),
+                };
                 (
                     0,
                     Some(task.clone()),
                     Some(RevisionSources {
                         brief: brief.clone(),
                         workbook: workbook.clone(),
+                        preview_base,
                     }),
                 )
             }
@@ -198,8 +207,31 @@ impl ResumeRequest {
             task,
             &sources.workbook,
         )?;
-        Ok(json!({"context":context, "brief":brief, "workbook":workbook}))
+        let mut result = json!({"context":context, "brief":brief, "workbook":workbook});
+        if let Some(revision) = &sources.preview_base {
+            let prior = self.post(
+                session,
+                authorization,
+                self.artifact_body("preview-read", task, revision),
+            )?;
+            let prior = bounded_json(prior.into_reader(), MAX_ARTIFACT_BYTES)?;
+            result["previewBase"] = preview_base(&prior, task, revision)?;
+        }
+        Ok(result)
     }
+}
+
+fn preview_base(view: &Value, task: &str, revision: &str) -> Result<Value, &'static str> {
+    let preview = &view["preview"];
+    let id = preview["id"].as_str().filter(|id| canonical_id(id));
+    if preview["taskId"].as_str() != Some(task)
+        || preview["selected"]["id"].as_str() != Some(revision)
+        || preview["current"].as_str() != Some(revision)
+        || id.is_none()
+    {
+        return Err("Squad preview base differs from the current handoff");
+    }
+    Ok(json!({"artifactId": id, "revisionId": revision}))
 }
 
 fn bounded_json(response: impl Read, limit: usize) -> Result<Value, &'static str> {
@@ -411,6 +443,7 @@ mod tests {
             (sources.brief.as_str(), sources.workbook.as_str()),
             (TASK, DELIVERY)
         );
+        assert!(sources.preview_base.is_none());
         assert_eq!(
             request.artifact_body("workbook-read", TASK, DELIVERY),
             json!({
@@ -420,6 +453,42 @@ mod tests {
         );
         args[4] = "3".into();
         assert!(ResumeRequest::parse(&args).is_err());
+    }
+
+    #[test]
+    fn checks_current_preview_base_from_the_original_task() {
+        let mut args = args("https://squad.example.test");
+        args.extend(
+            [
+                "0",
+                TASK,
+                "--sources",
+                TASK,
+                DELIVERY,
+                "--preview-base",
+                DELIVERY,
+            ]
+            .map(String::from),
+        );
+        let request = ResumeRequest::parse(&args).unwrap();
+        assert_eq!(
+            request.sources.unwrap().preview_base.as_deref(),
+            Some(DELIVERY)
+        );
+        args.pop();
+        assert!(ResumeRequest::parse(&args).is_err());
+
+        let mut response = json!({"preview": {
+            "id": TASK, "taskId": TASK, "current": DELIVERY,
+            "selected": {"id": DELIVERY, "html": "<p>Prior one-pager</p>"},
+        }});
+        assert_eq!(
+            preview_base(&response, TASK, DELIVERY).unwrap(),
+            json!({"artifactId": TASK, "revisionId": DELIVERY})
+        );
+        assert!(preview_base(&response, DELIVERY, DELIVERY).is_err());
+        response["preview"]["current"] = json!(TASK);
+        assert!(preview_base(&response, TASK, DELIVERY).is_err());
     }
 
     #[test]

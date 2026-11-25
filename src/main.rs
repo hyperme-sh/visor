@@ -290,6 +290,7 @@ where
                      [--supervisor-url URL] [--supervisor-url-2 URL] [--default-model {DEFAULT_CATALOG_ID}]\n\
                      [--route CATALOG=URL] [--experts CATALOG] [--expert-answer CATALOG=URL]\n\
                      hypermesh-visor squad-resume HTTPS_ORIGIN FORUM PLANE_TASK_ID AGENT [CURSOR SQUAD_TASK_ID]\n\
+                     Use --sources BRIEF_REVISION WORKBOOK_REVISION after cursor zero and the Squad task ID.\n\
                      The control API listens on control.sock in the runtime directory.\n\
                      --tcp or HYPERMESH_TCP=1 also opens a loopback port. Every request on that\n\
                      port needs the bearer in api.token. --listen sets that port and must be loopback.\n\

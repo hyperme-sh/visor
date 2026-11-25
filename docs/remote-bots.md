@@ -137,3 +137,10 @@ or restart, pass cursor zero with the original Squad task ID to read the full
 context and check that the new delivery still belongs to the same task. Squad
 checks the current delegate and forum grants. Keep the response within the
 authorized harness. Linked sources retain their own access checks.
+
+For the partner-preview handoff, add `--sources BRIEF_REVISION WORKBOOK_REVISION`
+after cursor zero and the original Squad task ID. Visor requests both exact
+revisions under the new agent's current grants and checks that they belong to
+the same task. The JSON output contains `context`, `brief`, and `workbook`.
+The workbook includes the selected revision and the quote in cents from
+Pricing B5. A refused or mismatched source stops the read before any output.

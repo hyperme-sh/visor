@@ -116,10 +116,45 @@ Conductor and Plane own the operation and its durable completion.
 
 Set `forum_reporter_socket` to the absolute Unix socket path of the local
 s3r.ch forum reporter. The socket and private parent directory must belong
-to the Visor user. Visor sends the delivery binding and terminal status
-only. It stops waiting as soon as the local consent epoch changes. The
+to the Visor user. By default Visor sends the delivery binding and terminal
+status. It stops waiting as soon as the local consent epoch changes. The
 reporter owns the forum signing key and submits the signed status through
 delivery-bound admission.
+
+### Publish an artifact from a managed run
+
+On Unix, set `"squad_artifacts": true` alongside `forum_prompt` and
+`forum_reporter_socket` for the worker that will publish partner drafts. Its
+same-user control socket accepts
+`POST /session/{session}/squad/artifacts` with `Content-Type: application/json`.
+Send the Plane task and delivery IDs, the artifact kind, and the matching
+unsigned s3r.ch draft. This is a pricing workbook for the 10-seat pilot.
+
+```json
+{
+  "planeTaskId": "727c899b-e8c4-8581-b9b1-6b795c2d11e1",
+  "deliveryId": "35583489-036b-4046-b508-3000f41e5ace",
+  "artifact": {
+    "kind": "workbook",
+    "draft": {
+      "taskId": "9f9e472b-07d2-4fb9-a24a-31244ed7daba",
+      "artifactId": "c5718581-c911-49eb-9ef3-1f28e2885bee",
+      "revisionId": "703f3281-025b-4da5-a7a9-50114e6a6246",
+      "inputs": { "quantity": 10, "unitPriceCents": 12000, "discountBps": 0 }
+    }
+  }
+}
+```
+
+The same route submits a `brief` draft with a null base and Markdown, or a
+`preview` draft with a base, exact brief and workbook revision IDs, and
+structured copy. The [s3r.ch reporter contract](https://github.com/FyberLabs/s3r.ch/blob/master/docs/squad-plane-forum.md#publish-through-the-local-visor-reporter)
+defines the draft fields. The authenticated Plane heartbeat supplies the
+assignment and attribution. Visor will publish only for the current completed
+remote prompt under its original local consent. The reporter checks current
+Squad access and returns `version`, `taskId`, `artifactId`, and `revisionId`.
+If the reply is interrupted, retry the exact submitted draft and IDs while
+the delivery is current. Submit a changed draft through a new admission.
 
 ### Resume an enrolled Squad project task
 

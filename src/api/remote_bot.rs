@@ -17,6 +17,8 @@ struct Settings {
     forum_prompt: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     forum_reporter_socket: Option<PathBuf>,
+    #[serde(default)]
+    squad_artifacts: bool,
 }
 
 pub(super) struct Client {
@@ -76,6 +78,7 @@ pub(super) fn configured() -> Result<Option<Arc<Client>>, String> {
             .forum_reporter_socket
             .as_ref()
             .is_some_and(|path| !cfg!(unix) || !path.is_absolute())
+        || settings.squad_artifacts && (!settings.forum_prompt || settings.forum_reporter_socket.is_none())
     {
         return Err("bot mode and absolute credential file are required".into());
     }
@@ -104,6 +107,10 @@ pub(super) fn configured() -> Result<Option<Arc<Client>>, String> {
 }
 
 impl Client {
+    pub(super) fn artifacts_enabled(&self) -> bool {
+        self.settings.squad_artifacts
+    }
+
     fn bound_session(&self) -> Result<Uuid, String> {
         let updated: Settings = serde_json::from_slice(&private_file(&self.config_path)?)
             .map_err(|_| "invalid bot configuration")?;
@@ -114,6 +121,7 @@ impl Client {
             || updated.credential_file != self.settings.credential_file
             || updated.forum_prompt != self.settings.forum_prompt
             || updated.forum_reporter_socket != self.settings.forum_reporter_socket
+            || updated.squad_artifacts != self.settings.squad_artifacts
         {
             return Err("bot identity configuration changed; restart required".into());
         }
@@ -302,10 +310,27 @@ fn local_report_consent(saved: &Value, report: &Value) -> Option<tasks::Consent>
     })
 }
 
+fn artifact_delivery(
+    status: &Value,
+    task: &Value,
+    session: Uuid,
+    connection: Uuid,
+    now: f64,
+) -> Option<(Uuid, Value)> {
+    // The heartbeat omits the payload. The saved permit comes only from
+    // claiming the digest-bound remote prompt.
+    if task["capability"] != "prompt" || task["forum"]["kind"] != "remote-agent"
+        || task["status"] != "completed"
+    {
+        return None;
+    }
+    forum_report(status, task, session, connection, now)
+}
+
 #[cfg(unix)]
-async fn send_forum_report(path: &std::path::Path, report: Value) -> std::io::Result<()> {
+async fn send_forum_report(path: &std::path::Path, report: Value) -> std::io::Result<Vec<u8>> {
     use std::os::unix::fs::{FileTypeExt, MetadataExt};
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 
     let checked = path.to_path_buf();
     tokio::task::spawn_blocking(move || {
@@ -330,19 +355,25 @@ async fn send_forum_report(path: &std::path::Path, report: Value) -> std::io::Re
     .await
     .map_err(std::io::Error::other)??;
     let mut stream = tokio::net::UnixStream::connect(path).await?;
+    if crate::local_peer::uid(&stream)? != unsafe { libc::geteuid() } {
+        return Err(std::io::Error::other("private forum reporter peer required"));
+    }
     let mut body = report.to_string();
     body.push('\n');
-    stream.write_all(body.as_bytes()).await?;
-    let mut reply = [0u8; 3];
-    stream.read_exact(&mut reply).await?;
-    if &reply != b"ok\n" {
-        return Err(std::io::Error::other("forum reporter refused"));
+    if body.len() > 65_536 {
+        return Err(std::io::Error::other("forum report exceeds its limit"));
     }
-    Ok(())
+    stream.write_all(body.as_bytes()).await?;
+    let mut reply = Vec::new();
+    BufReader::new(stream.take(513)).read_until(b'\n', &mut reply).await?;
+    if reply.len() > 512 || reply.last() != Some(&b'\n') {
+        return Err(std::io::Error::other("invalid forum reporter reply"));
+    }
+    Ok(reply)
 }
 
 #[cfg(not(unix))]
-async fn send_forum_report(_path: &std::path::Path, _report: Value) -> std::io::Result<()> {
+async fn send_forum_report(_path: &std::path::Path, _report: Value) -> std::io::Result<Vec<u8>> {
     Err(std::io::Error::other("forum reporter socket unavailable"))
 }
 
@@ -351,16 +382,20 @@ async fn report_while_consented(
     report: Value,
     state: &AppState,
     permit: tasks::Consent,
-) -> bool {
-    let request = tokio::time::timeout(Duration::from_secs(5), send_forum_report(path, report));
+    timeout: Duration,
+) -> Option<Vec<u8>> {
+    let request = tokio::time::timeout(timeout, send_forum_report(path, report));
     tokio::pin!(request);
     let mut guard = tokio::time::interval(Duration::from_millis(100));
     loop {
         if !permit.matches(&lock(&state.automation)) {
-            return false;
+            return None;
         }
         tokio::select! {
-            result = &mut request => return matches!(result, Ok(Ok(()))),
+            result = &mut request => {
+                return result.ok().and_then(Result::ok)
+                    .filter(|_| permit.matches(&lock(&state.automation)));
+            }
             _ = guard.tick() => {},
         }
     }
@@ -370,8 +405,9 @@ pub(super) async fn run(
     client: Arc<Client>,
     state: Arc<AppState>,
     mut stop: tokio::sync::watch::Receiver<bool>,
+    artifacts: Option<tokio::sync::mpsc::Receiver<squad_artifacts::Pending>>,
 ) -> std::io::Result<()> {
-    let result = poll(client, Arc::clone(&state), &mut stop).await;
+    let result = poll(client, Arc::clone(&state), &mut stop, artifacts).await;
     if let Err(message) = result {
         lock(&state.automation).pause();
         return Err(std::io::Error::other(message));
@@ -383,6 +419,7 @@ async fn poll(
     client: Arc<Client>,
     state: Arc<AppState>,
     stop: &mut tokio::sync::watch::Receiver<bool>,
+    mut artifacts: Option<tokio::sync::mpsc::Receiver<squad_artifacts::Pending>>,
 ) -> Result<(), String> {
     let mut previous_session = client.settings.session_id;
     let mut active: Option<(String, String)> = None;
@@ -539,11 +576,27 @@ async fn poll(
                 .duration_since(UNIX_EPOCH)
                 .map_err(|_| "invalid system clock")?
                 .as_secs_f64();
-            let next = items
-                .iter()
-                .filter_map(|task| {
+            if let Some(pending) = artifacts.as_mut().and_then(|queue| queue.try_recv().ok()) {
+                let bound = items.iter().find_map(|task| {
                     let (delivery, report) =
-                        forum_report(&status, task, session, client.connection, now)?;
+                        artifact_delivery(&status, task, session, client.connection, now)?;
+                    let permit = *report_permits.get(&delivery)?;
+                    let deadline = task["editor_deadline"].as_f64()?;
+                    (pending.matches(session, &report, delivery)
+                        && permit.matches(&lock(&state.automation)))
+                    .then_some((delivery, report, permit, deadline))
+                });
+                if let Some((delivery, report, permit, deadline)) = bound {
+                    if consent && pending.publish(report, |envelope| {
+                        report_while_consented(path, envelope, &state, permit,
+                            Duration::from_secs_f64((deadline - now).min(10.0)))
+                    }).await {
+                        reported.insert(delivery);
+                    }
+                }
+            } else {
+                let next = items.iter().find_map(|task| {
+                    let (delivery, report) = forum_report(&status, task, session, client.connection, now)?;
                     if reported.contains(&delivery) {
                         return None;
                     }
@@ -558,11 +611,11 @@ async fn poll(
                     permit
                         .matches(&lock(&state.automation))
                         .then_some((delivery, report, permit))
-                })
-                .next();
-            if let Some((delivery, report, permit)) = next {
-                if consent && report_while_consented(path, report, &state, permit).await {
-                    reported.insert(delivery);
+                });
+                if let Some((delivery, report, permit)) = next {
+                    if consent && report_while_consented(path, report, &state, permit, Duration::from_secs(5)).await.as_deref() == Some(b"ok\n") {
+                        reported.insert(delivery);
+                    }
                 }
             }
         }
@@ -659,6 +712,37 @@ mod tests {
         assert!(forum_report(&status, &task, session, Uuid::new_v4(), 100.0).is_none());
         task["status"] = json!("queued");
         assert!(forum_report(&status, &task, session, connection, 100.0).is_none());
+    }
+
+    #[test]
+    fn artifact_publication_requires_a_current_completed_remote_prompt() {
+        let session = Uuid::new_v4();
+        let connection = Uuid::new_v4();
+        let assignment = Uuid::new_v4();
+        let delivery = Uuid::new_v4();
+        let status = json!({"desired":"running", "assignment":{"id":assignment,"session_id":session},
+            "tenant_id":Uuid::new_v4(),"bot_id":Uuid::new_v4()});
+        let task = json!({"id":Uuid::new_v4(),"assignment_id":assignment,"session_id":session,
+            "connection_id":connection,"delivery_id":delivery,"status":"completed","editor_deadline":200,
+            "capability":"prompt","forum":{"id":"forum-fixture","principal":"a".repeat(87),"kind":"remote-agent"}});
+        let (bound_delivery, report) = artifact_delivery(&status, &task, session, connection, 100.0).unwrap();
+        assert_eq!(bound_delivery, delivery);
+        assert_eq!(report["taskId"], task["id"]);
+        for (key, value) in [
+            ("status", json!("failed")),
+            ("assignment_id", json!(Uuid::new_v4())),
+            ("connection_id", json!(Uuid::new_v4())),
+            ("cancel_requested", json!(true)),
+            ("editor_deadline", json!(100.0)),
+            ("capability", json!("desktop")),
+        ] {
+            let mut wrong = task.clone();
+            wrong[key] = value;
+            assert!(artifact_delivery(&status, &wrong, session, connection, 100.0).is_none(), "{key}");
+        }
+        let mut paused = status.clone();
+        paused["desired"] = json!("paused");
+        assert!(artifact_delivery(&paused, &task, session, connection, 100.0).is_none());
     }
 
     #[test]
@@ -761,6 +845,7 @@ mod tests {
                     credential_file: PathBuf::new(),
                     forum_prompt: false,
                     forum_reporter_socket: None,
+                    squad_artifacts: false,
                 },
                 credential: zeroize::Zeroizing::new(credential),
                 connection: Uuid::new_v4(),
@@ -792,6 +877,7 @@ mod tests {
             credential_file: PathBuf::from("/private/token"),
             forum_prompt: false,
             forum_reporter_socket: None,
+            squad_artifacts: false,
         };
         let mut updated = serde_json::to_value(&settings).unwrap();
         std::fs::write(&path, updated.to_string()).unwrap();

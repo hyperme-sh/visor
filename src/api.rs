@@ -42,6 +42,7 @@ use crate::vault::{SecretRequest, Vault, VaultError};
 
 mod tasks;
 mod remote_bot;
+mod squad_artifacts;
 mod mcp_resources;
 mod mcp_prompts;
 mod host;
@@ -1257,7 +1258,13 @@ pub async fn serve_until(
         )
         .await
     });
-    let control_app = router(Arc::clone(&state));
+    let mut control_app = router(Arc::clone(&state));
+    let mut artifact_requests = None;
+    if remote_bot.as_ref().is_some_and(|client| client.artifacts_enabled()) {
+        let (sender, receiver) = tokio::sync::mpsc::channel(1);
+        control_app = control_app.merge(squad_artifacts::route(Arc::clone(&state), sender));
+        artifact_requests = Some(receiver);
+    }
     let control_stop = cancel_rx.clone();
     let control = tokio::spawn(async move {
         crate::companion_sock::accept_loop(control_listener, control_app, "control", control_stop)
@@ -1268,7 +1275,7 @@ pub async fn serve_until(
         if state.host_bridge.is_some() {
             jobs.push(tokio::spawn(coding_tasks::run(Arc::clone(&state), cancel_rx.clone())));
         }
-        jobs.push(tokio::spawn(remote_bot::run(client, Arc::clone(&state), cancel_rx.clone())));
+        jobs.push(tokio::spawn(remote_bot::run(client, Arc::clone(&state), cancel_rx.clone(), artifact_requests)));
     }
     if let (Some(listener), Some(token)) = (tcp_listener, token) {
         let app = tcp_router(Arc::clone(&state), token);

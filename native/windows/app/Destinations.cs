@@ -33,13 +33,27 @@ internal static class Destinations
         int start = text.IndexOf('?');
         if (start < 0)
             return true;
-        string query = text[(start + 1)..];
-        if (uri.AbsolutePath != "/feed/squad/live" || !query.StartsWith("task=", StringComparison.Ordinal))
+        string[] fields = text[(start + 1)..].Split('&');
+        if (uri.AbsolutePath != "/feed/squad/live" || fields.Length > 4 ||
+            !fields[0].StartsWith("task=", StringComparison.Ordinal) || !SquadId(fields[0][5..]))
             return false;
-        string task = query[5..];
-        return Guid.TryParseExact(task, "D", out Guid id) && task == id.ToString("D") &&
-            task[14] is >= '1' and <= '8' && task[19] is '8' or '9' or 'a' or 'b';
+        var revisions = new HashSet<string>(StringComparer.Ordinal);
+        foreach (string field in fields.Skip(1))
+        {
+            int separator = field.IndexOf('=');
+            if (separator < 0)
+                return false;
+            string key = field[..separator];
+            if (key is not ("briefRevision" or "workbookRevision" or "previewRevision") ||
+                !SquadId(field[(separator + 1)..]) || !revisions.Add(key))
+                return false;
+        }
+        return true;
     }
+
+    private static bool SquadId(string value) =>
+        Guid.TryParseExact(value, "D", out Guid id) && value == id.ToString("D") &&
+        value[14] is >= '1' and <= '8' && value[19] is '8' or '9' or 'a' or 'b';
 
     internal static ProcessStartInfo EditorPlan(string executable, string workspace)
     {

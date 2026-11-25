@@ -509,6 +509,29 @@ func nativeCompactUsage(_ session: [String:Any]?) -> String? {
     return "↑\(input) ↓\(output)"
 }
 
+private func squadDestinationID(_ value: Substring) -> Bool {
+    guard value.utf8.count == 36, let id = UUID(uuidString: String(value)),
+          value == id.uuidString.lowercased() else { return false }
+    let version = value[value.index(value.startIndex, offsetBy: 14)]
+    let variant = value[value.index(value.startIndex, offsetBy: 19)]
+    return version >= "1" && version <= "8" && "89ab".contains(variant)
+}
+
+private func squadDestinationQuery(_ parts: URLComponents) -> Bool {
+    guard let query = parts.percentEncodedQuery else { return true }
+    let fields = query.split(separator: "&", omittingEmptySubsequences: false)
+    guard parts.percentEncodedPath == "/feed/squad/live", fields.count <= 4,
+          let task = fields.first, task.hasPrefix("task="), squadDestinationID(task.dropFirst(5)) else { return false }
+    let revisionKeys: Set<Substring> = ["briefRevision", "workbookRevision", "previewRevision"]
+    var seen: Set<Substring> = []
+    for field in fields.dropFirst() {
+        let pair = field.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false)
+        guard pair.count == 2, revisionKeys.contains(pair[0]), squadDestinationID(pair[1]),
+              seen.insert(pair[0]).inserted else { return false }
+    }
+    return true
+}
+
 func nativeDestinationResponse(_ result: [String:Any]?, expected: String, current: String?, editor: Bool) -> URL? {
     guard expected == current, UUID(uuidString: expected) != nil, result?["status"] as? Int == 200,
           let body = result?["body"] as? [String:Any], body["session"] as? String == expected,
@@ -516,7 +539,7 @@ func nativeDestinationResponse(_ result: [String:Any]?, expected: String, curren
           !value.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }) else { return nil }
     if editor { return value.hasPrefix("/") ? URL(fileURLWithPath: value, isDirectory: true) : nil }
     guard let parts = URLComponents(string: value), parts.scheme == "https", let host = parts.host, !host.isEmpty,
-          parts.user == nil, parts.password == nil, parts.query == nil, parts.fragment == nil else { return nil }
+          parts.user == nil, parts.password == nil, parts.fragment == nil, squadDestinationQuery(parts) else { return nil }
     return parts.url
 }
 
@@ -672,6 +695,22 @@ func selfTest() throws {
                                          expected: selected, current: current ?? selected, editor: editor)
     }
     try verifyNativeUnit(destination("https://forum.example.test/t/123")?.absoluteString == "https://forum.example.test/t/123")
+    let task = "227c4510-9847-47c4-84ac-11cdf847099c"
+    let revision = "703f3281-025b-4da5-a7a9-50114e6a6246"
+    let squadLink = "https://forum.example.test/feed/squad/live?task=" + task
+    for value in [squadLink, squadLink + "&briefRevision=" + revision, squadLink + "&workbookRevision=" + revision,
+                  squadLink + "&previewRevision=" + revision + "&workbookRevision=" + revision] {
+        try verifyNativeUnit(destination(value)?.absoluteString == value)
+    }
+    for value in [squadLink + "&token=x", squadLink + "&task=" + task,
+                  squadLink + "&briefRevision=" + revision + "&briefRevision=" + revision,
+                  squadLink + "&briefRevision=" + revision + "&", squadLink + "&%62riefRevision=" + revision,
+                  squadLink + "&workbookRevision=" + revision.uppercased(), squadLink + "&previewRevision=",
+                  "https://forum.example.test/t/1?task=" + task,
+                  "https://forum.example.test/feed/squad/live?previewRevision=" + revision + "&task=" + task] {
+        try verifyNativeUnit(destination(value) == nil)
+    }
+    try verifyNativeUnit(destination(squadLink + "&previewRevision=" + revision, current: other) == nil)
     for value in ["http://forum.example.test/t/123", "file:///tmp/a", "javascript:alert(1)",
                   "https://user:secret@forum.example.test/t/123", "https://forum.example.test/?token=x", "https://forum.example.test/#secret", "https://forum.example.test/\n"] {
         try verifyNativeUnit(destination(value) == nil)

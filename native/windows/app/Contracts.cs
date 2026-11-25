@@ -94,9 +94,15 @@ internal static class Contracts
             Refuses(() => Destinations.Resolve(DestinationResponse("https://forum.example.test/t/1"), selected, "00000000-0000-4000-8000-000000000002", false));
             Refuses(() => Destinations.Resolve(null, selected, selected, false));
             const string task = "227c4510-9847-47c4-84ac-11cdf847099c";
+            const string revision = "703f3281-025b-4da5-a7a9-50114e6a6246";
             string squadLink = $"https://forum.example.test/feed/squad/live?task={task}";
-            Require(Destinations.Resolve(DestinationResponse(squadLink), selected, selected, false) == squadLink);
+            foreach (string url in new[] { squadLink, $"{squadLink}&briefRevision={revision}",
+                $"{squadLink}&workbookRevision={revision}", $"{squadLink}&previewRevision={revision}&workbookRevision={revision}" })
+                Require(Destinations.Resolve(DestinationResponse(url), selected, selected, false) == url);
             foreach (string url in new[] { squadLink + "&token=x", squadLink + "&task=" + task,
+                $"{squadLink}&briefRevision={revision}&briefRevision={revision}", $"{squadLink}&briefRevision={revision}&",
+                $"{squadLink}&%62riefRevision={revision}", $"{squadLink}&workbookRevision={revision.ToUpperInvariant()}",
+                squadLink + "&previewRevision=", $"https://forum.example.test/feed/squad/live?previewRevision={revision}&task={task}",
                 squadLink + "#fragment", "https://forum.example.test/feed/squad/live?task=" + task.ToUpperInvariant(),
                 "https://forum.example.test/t/1?task=" + task, "https://forum.example.test/feed/squad/live?" })
                 Refuses(() => Destinations.Resolve(DestinationResponse(url), selected, selected, false));

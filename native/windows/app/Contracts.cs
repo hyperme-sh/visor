@@ -93,6 +93,13 @@ internal static class Contracts
             Require(Destinations.Resolve(DestinationResponse("https://forum.example.test/t/1"), selected, selected, false) == "https://forum.example.test/t/1");
             Refuses(() => Destinations.Resolve(DestinationResponse("https://forum.example.test/t/1"), selected, "00000000-0000-4000-8000-000000000002", false));
             Refuses(() => Destinations.Resolve(null, selected, selected, false));
+            const string task = "227c4510-9847-47c4-84ac-11cdf847099c";
+            string squadLink = $"https://forum.example.test/feed/squad/live?task={task}";
+            Require(Destinations.Resolve(DestinationResponse(squadLink), selected, selected, false) == squadLink);
+            foreach (string url in new[] { squadLink + "&token=x", squadLink + "&task=" + task,
+                squadLink + "#fragment", "https://forum.example.test/feed/squad/live?task=" + task.ToUpperInvariant(),
+                "https://forum.example.test/t/1?task=" + task, "https://forum.example.test/feed/squad/live?" })
+                Refuses(() => Destinations.Resolve(DestinationResponse(url), selected, selected, false));
             foreach (string? url in new string?[] { null, "file:///C:/Windows", "http://example.test", "https://user:secret@example.test", "https://example.test/?token=x", "https://example.test/#x", "https://example.test/\n" })
                 Refuses(() => Destinations.Resolve(DestinationResponse(url), selected, selected, false));
             var editorPlan = Destinations.EditorPlan(@"C:\Program Files\Microsoft VS Code\Code.exe", @"C:\workspace with spaces\$(not a command)");

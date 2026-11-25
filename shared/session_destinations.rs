@@ -51,14 +51,32 @@ pub fn configured(dir: &Path, session: &str, destination: Destination) -> Result
     resolve(value, destination)
 }
 
+fn squad_id(value: &str) -> bool {
+    canonical_session(value).as_deref() == Some(value)
+        && matches!(value.as_bytes()[14], b'1'..=b'8')
+        && matches!(value.as_bytes()[19], b'8' | b'9' | b'a' | b'b')
+}
+
 fn squad_task_query(path: &str, query: &str) -> bool {
-    let Some(task) = query.strip_prefix("task=") else {
+    if path != "/feed/squad/live" {
         return false;
-    };
-    path == "/feed/squad/live"
-        && canonical_session(task).as_deref() == Some(task)
-        && matches!(task.as_bytes()[14], b'1'..=b'8')
-        && matches!(task.as_bytes()[19], b'8' | b'9' | b'a' | b'b')
+    }
+    let mut fields = query.split('&');
+    if !fields
+        .next()
+        .and_then(|field| field.strip_prefix("task="))
+        .is_some_and(squad_id)
+    {
+        return false;
+    }
+    let mut revisions = std::collections::HashSet::new();
+    fields.all(|field| {
+        field.split_once('=').is_some_and(|(key, value)| {
+            matches!(key, "briefRevision" | "workbookRevision" | "previewRevision")
+                && squad_id(value)
+                && revisions.insert(key)
+        })
+    })
 }
 
 fn resolve(value: &str, destination: Destination) -> Result<Launch, String> {
@@ -131,14 +149,28 @@ mod tests {
         );
     }
     #[test]
-    fn forum_allows_only_the_canonical_squad_task_query() {
+    fn forum_allows_only_canonical_squad_task_and_revision_queries() {
         let task = "227c4510-9847-47c4-84ac-11cdf847099c";
+        let revision = "703f3281-025b-4da5-a7a9-50114e6a6246";
         let url = format!("https://forum.example.test/feed/squad/live?task={task}");
-        assert_eq!(resolve(&url, Destination::Forum).unwrap().argument, url);
+        for value in [
+            url.clone(),
+            format!("{url}&briefRevision={revision}"),
+            format!("{url}&workbookRevision={revision}"),
+            format!("{url}&previewRevision={revision}&workbookRevision={revision}"),
+        ] {
+            assert_eq!(resolve(&value, Destination::Forum).unwrap().argument, value);
+        }
         for value in [
             format!("https://forum.example.test/t/1?task={task}"),
             format!("{url}&token=x"),
             format!("{url}&task={task}"),
+            format!("{url}&briefRevision={revision}&briefRevision={revision}"),
+            format!("{url}&briefRevision={revision}&"),
+            format!("{url}&%62riefRevision={revision}"),
+            format!("{url}&workbookRevision={}", revision.to_uppercase()),
+            format!("{url}&previewRevision="),
+            format!("https://forum.example.test/feed/squad/live?previewRevision={revision}&task={task}"),
             format!("{url}#fragment"),
             format!("https://forum.example.test/feed/squad/live?task={}", task.to_uppercase()),
             "https://forum.example.test/feed/squad/live?task=00000000-0000-0000-0000-000000000000".into(),
@@ -165,7 +197,7 @@ mod tests {
         let id = "00000000-0000-4000-8000-000000000001";
         std::fs::write(
             dir.join("companion.toml"),
-            format!("[sessions.\"{id}\"]\nforum_url = \"https://forum.example.test/t/123\"\n"),
+            format!("[sessions.\"{id}\"]\nforum_url = \"https://forum.example.test/feed/squad/live?task={id}&previewRevision=703f3281-025b-4da5-a7a9-50114e6a6246\"\n"),
         )
         .unwrap();
         assert!(configured(&dir, id, Destination::Forum).is_ok());

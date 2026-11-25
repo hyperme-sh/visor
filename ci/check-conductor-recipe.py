@@ -13,6 +13,8 @@ import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
+from squad_conductor_contract import check_partner_handoff
+
 
 class Provider(BaseHTTPRequestHandler):
     def do_POST(self):
@@ -23,9 +25,11 @@ class Provider(BaseHTTPRequestHandler):
             response = json.dumps({"count": count, "max_model_len": 64}).encode()
         elif self.path == "/v1/chat/completions":
             self.server.calls.append((request["model"], request["max_tokens"]))
+            prompt = request["messages"][-1]["content"]
+            content = getattr(self.server, "scripted", {}).get(prompt, "ok")
             response = json.dumps({
                 "model": request["model"],
-                "choices": [{"index": 0, "message": {"role": "assistant", "content": "ok"},
+                "choices": [{"index": 0, "message": {"role": "assistant", "content": content},
                              "finish_reason": "stop"}],
                 "usage": {"prompt_tokens": 28, "completion_tokens": 1},
             }).encode()
@@ -74,6 +78,7 @@ def check(binary, folder, server):
         visor = Path(sys.argv[2]).resolve()
         for stop in (signal.SIGTERM, signal.SIGKILL, None):
             check_managed(visor, binary, folder, config, stop, server)
+        check_partner_handoff(visor, binary, folder, config, server)
 
 
 def process_identity(pid):

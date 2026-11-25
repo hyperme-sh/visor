@@ -127,8 +127,7 @@ impl ResumeRequest {
         })
     }
 
-    fn context(&self, response: impl Read) -> Result<Value, &'static str> {
-        let value = bounded_json(response, MAX_CONTEXT_BYTES)?;
+    fn context(&self, value: Value) -> Result<Value, &'static str> {
         let cursor = value["cursor"].as_u64().ok_or("invalid Squad cursor")?;
         let valid_task = value["taskId"].as_str().is_some_and(|task| {
             canonical_id(task) && self.task.as_deref().is_none_or(|expected| task == expected)
@@ -175,46 +174,33 @@ impl ResumeRequest {
         json!({"action":action, "forum":self.forum, "taskId":task, "revisionId":revision})
     }
 
-    fn sources(
+    fn read(
         &self,
-        session: &ureq::Agent,
-        authorization: &str,
-        context: Value,
+        mut fetch: impl FnMut(Value, usize) -> Result<Value, &'static str>,
     ) -> Result<Value, &'static str> {
+        let context = self.context(fetch(self.body(), MAX_CONTEXT_BYTES)?)?;
         let Some(sources) = &self.sources else {
             return Ok(context);
         };
         let task = self.task.as_deref().ok_or("missing Squad source task")?;
-        let brief = self.post(
-            session,
-            authorization,
-            self.artifact_body("brief-read", task, &sources.brief),
-        )?;
         let brief = selected_revision(
-            bounded_json(brief.into_reader(), MAX_ARTIFACT_BYTES)?,
+            fetch(self.artifact_body("brief-read", task, &sources.brief), MAX_ARTIFACT_BYTES)?,
             "brief",
             task,
             &sources.brief,
         )?;
-        let workbook = self.post(
-            session,
-            authorization,
-            self.artifact_body("workbook-read", task, &sources.workbook),
-        )?;
         let workbook = selected_revision(
-            bounded_json(workbook.into_reader(), MAX_ARTIFACT_BYTES)?,
+            fetch(self.artifact_body("workbook-read", task, &sources.workbook), MAX_ARTIFACT_BYTES)?,
             "workbook",
             task,
             &sources.workbook,
         )?;
         let mut result = json!({"context":context, "brief":brief, "workbook":workbook});
         if let Some(revision) = &sources.preview_base {
-            let prior = self.post(
-                session,
-                authorization,
+            let prior = fetch(
                 self.artifact_body("preview-read", task, revision),
+                MAX_ARTIFACT_BYTES,
             )?;
-            let prior = bounded_json(prior.into_reader(), MAX_ARTIFACT_BYTES)?;
             result["previewBase"] = preview_base(&prior, task, revision)?;
         }
         Ok(result)
@@ -323,9 +309,10 @@ pub(super) fn run(
             .redirects(0)
             .timeout(Duration::from_secs(15))
             .build();
-        let response = request.post(&session, authorization.as_str(), request.body())?;
-        let context = request.context(response.into_reader())?;
-        let context = request.sources(&session, authorization.as_str(), context)?;
+        let context = request.read(|body, limit| {
+            let response = request.post(&session, authorization.as_str(), body)?;
+            bounded_json(response.into_reader(), limit)
+        })?;
         serde_json::to_writer(&mut out, &context).map_err(|_| "could not write Squad context")?;
         writeln!(out).map_err(|_| "could not write Squad context")
     })();
@@ -380,7 +367,7 @@ mod tests {
         let request = ResumeRequest::parse(&args("https://squad.example.test")).unwrap();
         let context = json!({"changed":true, "cursor":4, "taskId":TASK,
             "planeTaskId":DELIVERY, "delegate":request.agent, "branch":[], "sources":[]});
-        let read = |value: &Value| request.context(value.to_string().as_bytes());
+        let read = |value: &Value| request.context(value.clone());
         assert_eq!(read(&context).unwrap(), context);
         for (key, value) in [
             ("planeTaskId", json!(TASK)),
@@ -393,9 +380,7 @@ mod tests {
             altered[key] = value;
             assert!(read(&altered).is_err(), "{key}");
         }
-        assert!(request
-            .context(&vec![b' '; MAX_CONTEXT_BYTES + 1][..])
-            .is_err());
+        assert!(bounded_json(&vec![b' '; MAX_CONTEXT_BYTES + 1][..], MAX_CONTEXT_BYTES).is_err());
     }
 
     #[test]
@@ -406,12 +391,9 @@ mod tests {
         args.push(TASK.into());
         let request = ResumeRequest::parse(&args).unwrap();
         let value = json!({"taskId":TASK,"cursor":4,"changed":false});
-        assert_eq!(
-            request.context(value.to_string().as_bytes()).unwrap(),
-            value
-        );
+        assert_eq!(request.context(value.clone()).unwrap(), value);
         let wrong_task = json!({"taskId":DELIVERY,"cursor":4,"changed":false});
-        assert!(request.context(wrong_task.to_string().as_bytes()).is_err());
+        assert!(request.context(wrong_task).is_err());
     }
 
     #[test]
@@ -421,9 +403,9 @@ mod tests {
         let request = ResumeRequest::parse(&args).unwrap();
         let mut response = json!({"changed":true, "cursor":4, "taskId":TASK,
             "planeTaskId":DELIVERY, "delegate":request.agent});
-        assert!(request.context(response.to_string().as_bytes()).is_ok());
+        assert!(request.context(response.clone()).is_ok());
         response["taskId"] = json!(DELIVERY);
-        assert!(request.context(response.to_string().as_bytes()).is_err());
+        assert!(request.context(response).is_err());
     }
 
     #[test]
@@ -504,6 +486,55 @@ mod tests {
         assert!(selected_revision(response.clone(), "workbook", DELIVERY, DELIVERY).is_err());
         assert!(selected_revision(response, "workbook", TASK, TASK).is_err());
         assert!(selected_revision(json!(false), "brief", TASK, TASK).is_err());
+    }
+
+    #[test]
+    fn handoff_reads_the_owner_edited_workbook_under_the_successor_assignment() {
+        const SUCCESSOR: &str = "b213d69b-ba64-4e6a-8c9b-e0bd5db4234a";
+        const BRIEF: &str = "13247cd0-9a88-4688-8402-115c4f4222b1";
+        const EDITED: &str = "a43d9524-9404-493a-8501-92bc81bb1a56";
+        const PRIOR: &str = "ee211992-1608-4545-926b-bda040fe6574";
+        let mut original_args = args("https://squad.example.test");
+        original_args.extend(["0", TASK].map(String::from));
+        let original = ResumeRequest::parse(&original_args).unwrap();
+        let mut successor_args = original_args;
+        successor_args[2] = SUCCESSOR.into();
+        successor_args[3] = format!("{}.{}", "c".repeat(43), "d".repeat(43));
+        successor_args.extend(["--sources", BRIEF, EDITED, "--preview-base", PRIOR].map(String::from));
+        let successor = ResumeRequest::parse(&successor_args).unwrap();
+        let context = json!({"taskId":TASK, "changed":true, "cursor":9,
+            "planeTaskId":SUCCESSOR, "delegate":successor.agent});
+        assert!(original.read(|_, _| Ok(context.clone())).is_err());
+        assert!(successor.read(|_, _| Err("enrolled grant revoked")).is_err());
+
+        let mut script = [
+            ("resume", SUCCESSOR, context),
+            ("brief-read", BRIEF, json!({"brief":{"taskId":TASK,"id":BRIEF,
+                "selected":{"id":BRIEF,"markdown":"A 30-day pilot for 10 seats"}}})),
+            ("workbook-read", EDITED, json!({"workbook":{"taskId":TASK,"id":DELIVERY,
+                "sheet":"Pricing","totalCell":"B5","totalCents":108000,
+                "selected":{"id":EDITED,"inputs":{"quantity":10,"unitPriceCents":12000,"discountBps":1000}}}})),
+            ("preview-read", PRIOR, json!({"preview":{"taskId":TASK,"id":SUCCESSOR,
+                "current":PRIOR,"selected":{"id":PRIOR}}})),
+        ].into_iter();
+        let handoff = successor.read(|body, limit| {
+            let (action, id, response) = script.next().expect("unexpected Squad request");
+            let expected = if action == "resume" {
+                assert_eq!(limit, MAX_CONTEXT_BYTES);
+                json!({"action":action,"forum":"forum_partner_fixture","planeTaskId":id,"since":0})
+            } else {
+                assert_eq!(limit, MAX_ARTIFACT_BYTES);
+                json!({"action":action,"forum":"forum_partner_fixture","taskId":TASK,"revisionId":id})
+            };
+            assert_eq!(body, expected);
+            Ok(response)
+        }).unwrap();
+        assert!(script.next().is_none());
+        assert_eq!(handoff["context"]["taskId"], TASK);
+        assert_eq!(handoff["brief"]["selected"]["id"], BRIEF);
+        assert_eq!(handoff["workbook"]["selected"]["id"], EDITED);
+        assert_eq!(handoff["workbook"]["totalCents"], 108000);
+        assert_eq!(handoff["previewBase"]["revisionId"], PRIOR);
     }
 
     #[test]

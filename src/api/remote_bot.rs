@@ -302,10 +302,12 @@ fn local_report_consent(saved: &Value, report: &Value) -> Option<tasks::Consent>
     })
 }
 
+const REPORT_FRAME_BYTES: u64 = 65_536;
+
 #[cfg(unix)]
-async fn send_forum_report(path: &std::path::Path, report: Value) -> std::io::Result<()> {
+async fn forum_exchange(path: &std::path::Path, mut body: Vec<u8>) -> std::io::Result<Vec<u8>> {
     use std::os::unix::fs::{FileTypeExt, MetadataExt};
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 
     let checked = path.to_path_buf();
     tokio::task::spawn_blocking(move || {
@@ -330,40 +332,190 @@ async fn send_forum_report(path: &std::path::Path, report: Value) -> std::io::Re
     .await
     .map_err(std::io::Error::other)??;
     let mut stream = tokio::net::UnixStream::connect(path).await?;
-    let mut body = report.to_string();
-    body.push('\n');
-    stream.write_all(body.as_bytes()).await?;
-    let mut reply = [0u8; 3];
-    stream.read_exact(&mut reply).await?;
-    if &reply != b"ok\n" {
-        return Err(std::io::Error::other("forum reporter refused"));
+    if !crate::companion_sock::peer_is_current_user(&stream) {
+        return Err(std::io::Error::other(
+            "private forum reporter peer required",
+        ));
     }
-    Ok(())
+    body.push(b'\n');
+    stream.write_all(&body).await?;
+    let mut reply = Vec::new();
+    BufReader::new(stream.take(1024))
+        .read_until(b'\n', &mut reply)
+        .await?;
+    if reply.last() != Some(&b'\n') {
+        return Err(std::io::Error::other("invalid forum reporter reply"));
+    }
+    Ok(reply)
 }
 
 #[cfg(not(unix))]
-async fn send_forum_report(_path: &std::path::Path, _report: Value) -> std::io::Result<()> {
+async fn forum_exchange(_path: &std::path::Path, _body: Vec<u8>) -> std::io::Result<Vec<u8>> {
     Err(std::io::Error::other("forum reporter socket unavailable"))
 }
 
-async fn report_while_consented(
+async fn exchange_while_consented(
     path: &std::path::Path,
-    report: Value,
+    body: Vec<u8>,
+    deadline: Instant,
     state: &AppState,
     permit: tasks::Consent,
-) -> bool {
-    let request = tokio::time::timeout(Duration::from_secs(5), send_forum_report(path, report));
+) -> Result<Vec<u8>, ApiError> {
+    let request = tokio::time::timeout_at(deadline.into(), async {
+        let _exchange = state.forum_reporter_exchange.lock().await;
+        if !permit.matches(&lock(&state.automation)) {
+            return Err(ApiError::forbidden("Delivery consent is no longer current"));
+        }
+        forum_exchange(path, body)
+            .await
+            .map_err(|_| ApiError::unavailable("Forum reporter unavailable"))
+    });
     tokio::pin!(request);
     let mut guard = tokio::time::interval(Duration::from_millis(100));
     loop {
         if !permit.matches(&lock(&state.automation)) {
-            return false;
+            return Err(ApiError::forbidden("Delivery consent is no longer current"));
         }
         tokio::select! {
-            result = &mut request => return matches!(result, Ok(Ok(()))),
+            result = &mut request => {
+                if !permit.matches(&lock(&state.automation)) {
+                    return Err(ApiError::forbidden("Delivery consent is no longer current"));
+                }
+                return result.unwrap_or_else(|_| Err(ApiError::unavailable("Forum reporter unavailable")));
+            }
             _ = guard.tick() => {},
         }
     }
+}
+
+#[derive(Clone)]
+pub(super) struct Publication {
+    socket: PathBuf,
+    report: Value,
+    permit: tasks::Consent,
+    deadline: Instant,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(super) struct PublishRequest {
+    plane_task_id: Uuid,
+    artifact: Artifact,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct Artifact {
+    kind: ArtifactKind,
+    draft: Value,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+enum ArtifactKind {
+    Brief,
+    Workbook,
+    Preview,
+}
+
+#[derive(Deserialize, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(super) struct ArtifactResult {
+    version: u32,
+    task_id: Uuid,
+    artifact_id: Uuid,
+    revision_id: Uuid,
+}
+
+impl ArtifactResult {
+    fn expected(draft: &Value) -> Result<Self, ApiError> {
+        let id = |name: &str| {
+            draft[name]
+                .as_str()
+                .and_then(|s| Uuid::parse_str(s).ok())
+                .filter(|id| !id.is_nil())
+                .ok_or_else(|| ApiError::bad("Artifact requires task, artifact and revision IDs"))
+        };
+        Ok(Self {
+            version: 1,
+            task_id: id("taskId")?,
+            artifact_id: id("artifactId")?,
+            revision_id: id("revisionId")?,
+        })
+    }
+}
+
+pub(super) async fn publish(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<PublishRequest>,
+) -> Result<Json<ArtifactResult>, ApiError> {
+    let scope = lock(&state.forum_publications)
+        .get(&body.plane_task_id)
+        .cloned()
+        .filter(|scope| scope.deadline > Instant::now())
+        .ok_or_else(|| ApiError::forbidden("Current completed Squad delivery required"))?;
+    let expected = ArtifactResult::expected(&body.artifact.draft)?;
+    let frame = serde_json::to_vec(&json!({
+        "version": 1, "report": scope.report, "artifact": body.artifact,
+    }))
+    .map_err(|_| ApiError::bad("Invalid Squad artifact"))?;
+    if frame.len() as u64 >= REPORT_FRAME_BYTES {
+        return Err(ApiError::bad("Squad artifact exceeds reporter frame limit"));
+    }
+    let deadline = scope.deadline.min(Instant::now() + Duration::from_secs(10));
+    let reply =
+        exchange_while_consented(&scope.socket, frame, deadline, &state, scope.permit).await?;
+    let publication = serde_json::from_slice::<ArtifactResult>(&reply)
+        .ok()
+        .filter(|result| result == &expected)
+        .ok_or_else(|| ApiError::conflict("Forum reporter refused the artifact"))?;
+    Ok(Json(publication))
+}
+
+fn current_forum_publications(
+    status: &Value,
+    client: &Client,
+    state: &AppState,
+    session: Uuid,
+    permits: &mut HashMap<Uuid, tasks::Consent>,
+) -> Result<Vec<(Uuid, Publication)>, String> {
+    let (Some(path), Some(items)) = (
+        &client.settings.forum_reporter_socket,
+        status["tasks"].as_array(),
+    ) else {
+        return Ok(Vec::new());
+    };
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|_| "invalid system clock")?
+        .as_secs_f64();
+    let instant = Instant::now();
+    Ok(items
+        .iter()
+        .filter_map(|task| {
+            let (delivery, report) = forum_report(status, task, session, client.connection, now)?;
+            let permit = permits.get(&delivery).copied().or_else(|| {
+                if task["forum"]["kind"] != "local" {
+                    return None;
+                }
+                let permit = local_report_consent(&lock(&state.coding_status), &report)?;
+                permits.insert(delivery, permit);
+                Some(permit)
+            })?;
+            let duration =
+                Duration::try_from_secs_f64(task["editor_deadline"].as_f64()? - now).ok()?;
+            let deadline = instant.checked_add(duration)?;
+            permit.matches(&lock(&state.automation)).then_some((
+                delivery,
+                Publication {
+                    socket: path.clone(),
+                    report,
+                    permit,
+                    deadline,
+                },
+            ))
+        })
+        .collect())
 }
 
 pub(super) async fn run(
@@ -372,6 +524,7 @@ pub(super) async fn run(
     mut stop: tokio::sync::watch::Receiver<bool>,
 ) -> std::io::Result<()> {
     let result = poll(client, Arc::clone(&state), &mut stop).await;
+    lock(&state.forum_publications).clear();
     if let Err(message) = result {
         lock(&state.automation).pause();
         return Err(std::io::Error::other(message));
@@ -531,39 +684,28 @@ async fn poll(
                 }
             }
         }
-        if let (Some(path), Some(items)) = (
-            &client.settings.forum_reporter_socket,
-            status["tasks"].as_array(),
-        ) {
-            let now = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .map_err(|_| "invalid system clock")?
-                .as_secs_f64();
-            let next = items
-                .iter()
-                .filter_map(|task| {
-                    let (delivery, report) =
-                        forum_report(&status, task, session, client.connection, now)?;
-                    if reported.contains(&delivery) {
-                        return None;
-                    }
-                    let permit = report_permits.get(&delivery).copied().or_else(|| {
-                        if task["forum"]["kind"] != "local" {
-                            return None;
-                        }
-                        let permit = local_report_consent(&lock(&state.coding_status), &report)?;
-                        report_permits.insert(delivery, permit);
-                        Some(permit)
-                    })?;
-                    permit
-                        .matches(&lock(&state.automation))
-                        .then_some((delivery, report, permit))
-                })
-                .next();
-            if let Some((delivery, report, permit)) = next {
-                if consent && report_while_consented(path, report, &state, permit).await {
-                    reported.insert(delivery);
+        let publications =
+            current_forum_publications(&status, &client, &state, session, &mut report_permits)?;
+        *lock(&state.forum_publications) = publications
+            .iter()
+            .filter_map(|(_, scope)| {
+                if scope.report["status"] != "completed" {
+                    return None;
                 }
+                let plane_task_id = Uuid::parse_str(scope.report["taskId"].as_str()?).ok()?;
+                Some((plane_task_id, scope.clone()))
+            })
+            .collect();
+        if let Some((delivery, scope)) = publications.iter().find(|(id, _)| !reported.contains(id))
+        {
+            let deadline = scope.deadline.min(Instant::now() + Duration::from_secs(5));
+            let frame = scope.report.to_string().into_bytes();
+            if consent
+                && exchange_while_consented(&scope.socket, frame, deadline, &state, scope.permit)
+                    .await
+                    .is_ok_and(|reply| reply == b"ok\n")
+            {
+                reported.insert(*delivery);
             }
         }
         tokio::select! {
@@ -581,6 +723,133 @@ async fn poll(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn artifacts_use_the_completed_delivery_and_original_consent() {
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+        use tower::ServiceExt;
+
+        let dir = std::env::temp_dir().join(format!("visor-artifact-{}", Uuid::new_v4()));
+        crate::companion_sock::prepare_dir(&dir).unwrap();
+        let desktop = crate::FixtureDesktop::open(&dir.join("desktop.jsonl")).unwrap();
+        let state = Arc::new(AppState::new(Arc::new(desktop), Duration::from_millis(20)));
+        let socket = dir.join("reporter.sock");
+        let reporter = tokio::net::UnixListener::bind(&socket).unwrap();
+        let session = Uuid::new_v4();
+        let plane = Uuid::new_v4();
+        let project = Uuid::new_v4();
+        let artifact = Uuid::new_v4();
+        let revision = Uuid::new_v4();
+        let permit = {
+            let mut gate = lock(&state.automation);
+            gate.control(Some(session), automation::Control::Start)
+                .unwrap();
+            tasks::Consent::capture(&gate, session)
+        };
+        let report = json!({"taskId": plane, "sessionId": session, "status": "completed",
+            "assignmentId": Uuid::new_v4(), "deliveryId": Uuid::new_v4()});
+        lock(&state.forum_publications).insert(
+            plane,
+            Publication {
+                socket,
+                report: report.clone(),
+                permit,
+                deadline: Instant::now() + Duration::from_secs(10),
+            },
+        );
+        let draft = json!({"taskId": project, "artifactId": artifact, "revisionId": revision,
+            "base": null, "markdown": "10 seats for 30 days"});
+        let body = json!({"kind": "brief", "draft": draft});
+        let workbook_revision = Uuid::new_v4();
+        let workbook = json!({"kind":"workbook", "draft":{"taskId":project,
+            "artifactId":Uuid::new_v4(), "revisionId":workbook_revision,
+            "inputs":{"quantity":10,"unitPriceCents":12000,"discountBps":0}}});
+        let preview = json!({"kind":"preview", "draft":{"taskId":project,
+            "artifactId":Uuid::new_v4(), "revisionId":Uuid::new_v4(), "base":null,
+            "briefRevisionId":revision, "workbookRevisionId":workbook_revision,
+            "copy":{"title":"Partner pilot","summary":"10 seats for 30 days","highlights":[],"nextStep":"Confirm the quote"}}});
+        let request = |task: Uuid| {
+            Json(
+                serde_json::from_value(json!({
+                    "planeTaskId": task, "artifact": body,
+                }))
+                .unwrap(),
+            )
+        };
+        let expected = json!({"version": 1, "taskId": project, "artifactId": artifact, "revisionId": revision});
+        let http_request = |artifact: &Value| Request::post("/squad/publish")
+            .header("content-type", "application/json")
+            .body(Body::from(json!({"planeTaskId":plane, "artifact":artifact}).to_string()))
+            .unwrap();
+        let publisher = tokio::spawn({
+            let drafts = [body.clone(), body.clone(), body.clone(), workbook.clone(), preview.clone()];
+            async move {
+                for (attempt, body) in drafts.into_iter().enumerate() {
+                    let (stream, _) = reporter.accept().await.unwrap();
+                    let mut stream = BufReader::new(stream);
+                    let mut frame = String::new();
+                    stream.read_line(&mut frame).await.unwrap();
+                    assert_eq!(
+                        serde_json::from_str::<Value>(&frame).unwrap(),
+                        json!({
+                            "version": 1, "report": report, "artifact": body,
+                        })
+                    );
+                    let draft = &body["draft"];
+                    let mut response = json!({"version":1,"taskId":draft["taskId"],
+                        "artifactId":draft["artifactId"],"revisionId":draft["revisionId"]});
+                    if attempt == 2 {
+                        response["revisionId"] = json!(Uuid::new_v4());
+                    }
+                    stream
+                        .get_mut()
+                        .write_all(format!("{response}\n").as_bytes())
+                        .await
+                        .unwrap();
+                }
+            }
+        });
+        for app in [router(state.clone()), socket_companion_router(state.clone())] {
+            assert_eq!(app.oneshot(http_request(&body)).await.unwrap().status(), StatusCode::NOT_FOUND);
+        }
+        assert!(matches!(
+            publish(State(state.clone()), request(Uuid::new_v4())).await,
+            Err(error) if error.status == StatusCode::FORBIDDEN,
+        ));
+        let response = control_router(state.clone()).oneshot(http_request(&body)).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let reply = axum::body::to_bytes(response.into_body(), 1024).await.unwrap();
+        assert_eq!(serde_json::from_slice::<Value>(&reply).unwrap(), expected);
+        let result = publish(State(state.clone()), request(plane)).await.map_err(|error| error.message).unwrap();
+        assert_eq!(serde_json::to_value(result.0).unwrap(), expected);
+        assert!(matches!(
+            publish(State(state.clone()), request(plane)).await,
+            Err(error) if error.status == StatusCode::CONFLICT,
+        ));
+        for artifact in [workbook, preview] {
+            let response = control_router(state.clone()).oneshot(http_request(&artifact)).await.unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            let reply = axum::body::to_bytes(response.into_body(), 1024).await.unwrap();
+            let reply: Value = serde_json::from_slice(&reply).unwrap();
+            for field in ["taskId", "artifactId", "revisionId"] {
+                assert_eq!(reply[field], artifact["draft"][field]);
+            }
+        }
+        publisher.await.unwrap();
+        lock(&state.automation)
+            .control(Some(session), automation::Control::Pause)
+            .unwrap();
+        lock(&state.automation)
+            .control(Some(session), automation::Control::Start)
+            .unwrap();
+        assert!(matches!(
+            publish(State(state.clone()), request(plane)).await,
+            Err(error) if error.status == StatusCode::FORBIDDEN,
+        ));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
     #[test]
     fn origin_rejects_plaintext_redirect_paths_and_embedded_credentials() {
         for origin in [

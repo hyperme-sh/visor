@@ -116,8 +116,8 @@ Conductor and Plane own the operation and its durable completion.
 
 Set `forum_reporter_socket` to the absolute Unix socket path of the local
 s3r.ch forum reporter. The socket and private parent directory must belong
-to the Visor user. Visor sends the delivery binding and terminal status
-only. It stops waiting as soon as the local consent epoch changes. The
+to the Visor user. A terminal status report sends the delivery binding and
+status. Visor stops waiting when the local consent epoch changes. The
 reporter owns the forum signing key and submits the signed status through
 delivery-bound admission.
 
@@ -150,3 +150,22 @@ artifact and revision IDs in `previewBase`. Use these as the draft's
 
 The workbook includes the selected revision and the quote in cents from
 Pricing B5. A refused or mismatched source stops the read before any output.
+
+### Submit a Squad artifact from a completed delivery
+
+On Unix, run `hypermesh-visor squad-publish PLANE_TASK_ID` and write one JSON
+object containing `kind` and `draft` to stdin. The supported kinds are
+`brief`, `workbook`, and `preview`. Use the unsigned draft fields from the
+Squad artifact contract, including the Squad task ID and stable artifact and
+revision IDs.
+
+The command uses the same user's private Visor control socket. Visor reads the
+current completed delivery from Plane and supplies its bot, assignment,
+session and delivery fields to the configured reporter. The original local
+consent and editor deadline still govern the submission. Squad checks the
+current assignment, grant and artifact sources before accepting the revision.
+
+On success the command writes the task, artifact and revision IDs. If a
+connection fails before the result arrives, submit the identical draft with
+the same IDs and Plane task. To change the draft after it is accepted, use
+the next authorized proposal.

@@ -1,5 +1,7 @@
 #[cfg(target_os = "linux")]
 mod managed_conductor;
+#[cfg(unix)]
+mod squad_publish;
 mod squad_resume;
 #[cfg(feature = "desktop")]
 use hypermesh_visor::LinuxDesktop;
@@ -29,6 +31,15 @@ struct Options {
 
 fn main() -> ExitCode {
     let mut args = std::env::args().skip(1).peekable();
+    #[cfg(unix)]
+    if args.peek().is_some_and(|arg| arg == "squad-publish") {
+        args.next();
+        if current_euid() == 0 {
+            eprintln!("hypermesh-visor: refusing to run as root");
+            return ExitCode::from(1);
+        }
+        return squad_publish::run(args, io::stdin().lock(), io::stdout().lock());
+    }
     if args.peek().is_some_and(|arg| arg == "squad-resume") {
         args.next();
         if current_euid() == 0 {
@@ -291,6 +302,7 @@ where
                      [--route CATALOG=URL] [--experts CATALOG] [--expert-answer CATALOG=URL]\n\
                      hypermesh-visor squad-resume HTTPS_ORIGIN FORUM PLANE_TASK_ID AGENT [CURSOR SQUAD_TASK_ID]\n\
                      Use --sources BRIEF_REVISION WORKBOOK_REVISION after cursor zero and the Squad task ID.\n\
+                     On Unix, hypermesh-visor squad-publish PLANE_TASK_ID reads an unsigned artifact from stdin.\n\
                      The control API listens on control.sock in the runtime directory.\n\
                      --tcp or HYPERMESH_TCP=1 also opens a loopback port. Every request on that\n\
                      port needs the bearer in api.token. --listen sets that port and must be loopback.\n\

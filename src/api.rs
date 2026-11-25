@@ -62,6 +62,8 @@ pub struct AppState {
     host_bridge: Option<crate::host_bridge::Bridge>,
     tasks: tasks::Queue,
     coding_status: Mutex<serde_json::Value>,
+    forum_publications: Mutex<HashMap<Uuid, remote_bot::Publication>>,
+    forum_reporter_exchange: tokio::sync::Mutex<()>,
     sessions: Mutex<HashMap<Uuid, Session>>,
     desktop: Arc<dyn Desktop>,
     watch_poll: Duration,
@@ -188,6 +190,8 @@ impl AppState {
             host_bridge: None,
             tasks: tasks::Queue::new(),
             coding_status: Mutex::new(serde_json::json!({})),
+            forum_publications: Mutex::new(HashMap::new()),
+            forum_reporter_exchange: tokio::sync::Mutex::new(()),
             sessions: Mutex::new(HashMap::new()),
             selected_session: Mutex::new(None),
             selected_approved: AtomicBool::new(false),
@@ -772,6 +776,14 @@ pub fn router(state: Arc<AppState>) -> Router {
     routes(state, false)
 }
 
+fn control_router(state: Arc<AppState>) -> Router {
+    let publication = Router::new()
+        .route("/squad/publish", post(remote_bot::publish))
+        .layer(middleware::from_fn_with_state(state.clone(), managed_admission))
+        .with_state(state.clone());
+    router(state).merge(publication)
+}
+
 /// Native UI authority stays in-process, never on an external socket.
 pub(crate) fn socket_companion_router(state: Arc<AppState>) -> Router {
     if state.desktop.backend_name().starts_with("macos") || state.desktop.backend_name().starts_with("windows") { router(state) }
@@ -1257,7 +1269,7 @@ pub async fn serve_until(
         )
         .await
     });
-    let control_app = router(Arc::clone(&state));
+    let control_app = control_router(Arc::clone(&state));
     let control_stop = cancel_rx.clone();
     let control = tokio::spawn(async move {
         crate::companion_sock::accept_loop(control_listener, control_app, "control", control_stop)

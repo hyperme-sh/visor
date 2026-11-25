@@ -124,7 +124,7 @@ delivery-bound admission.
 ### Resume an enrolled Squad project task
 
 On desktop or headless Visor, an enrolled harness can use
-`hypermesh-visor squad-resume HTTPS_ORIGIN FORUM PLANE_TASK_ID AGENT [CURSOR]`.
+`hypermesh-visor squad-resume HTTPS_ORIGIN FORUM PLANE_TASK_ID AGENT [CURSOR SQUAD_TASK_ID]`.
 Pass the current bearer from the s3r.ch agent challenge and exchange through
 stdin and close the stream. Set the trusted Squad origin and enrolled SEA
 principal from the harness configuration. Use the Plane task ID on the current
@@ -132,7 +132,8 @@ delivery, rather than the forum's source task ID or delivery nonce.
 
 The command reads the existing Squad project endpoint and writes its compact
 JSON response to stdout, including the canonical Squad task ID. Use the returned
-cursor for an incremental read, or start from zero when the harness needs the
-full assigned context after restarting. Squad checks the current delegate and
-forum grants. Keep the response within the authorized harness. Linked sources
-retain their own access checks.
+cursor together with the Squad task ID for an incremental read. For a handoff
+or restart, pass cursor zero with the original Squad task ID to read the full
+context and check that the new delivery still belongs to the same task. Squad
+checks the current delegate and forum grants. Keep the response within the
+authorized harness. Linked sources retain their own access checks.

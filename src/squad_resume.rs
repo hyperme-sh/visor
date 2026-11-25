@@ -9,6 +9,8 @@ use zeroize::Zeroizing;
 const MAX_BEARER_BYTES: usize = 8192;
 const MAX_CONTEXT_BYTES: usize = 16 * 1024;
 const MAX_CURSOR: u64 = (1 << 53) - 1;
+const USAGE: &str =
+    "usage: hypermesh-visor squad-resume HTTPS_ORIGIN FORUM PLANE_TASK_ID AGENT [CURSOR SQUAD_TASK_ID]";
 
 struct ResumeRequest {
     url: Url,
@@ -16,6 +18,7 @@ struct ResumeRequest {
     delivery: String,
     agent: String,
     cursor: u64,
+    task: Option<String>,
 }
 
 fn canonical_id(value: &str) -> bool {
@@ -32,16 +35,19 @@ fn identity_part(value: &str) -> bool {
 impl ResumeRequest {
     fn parse(args: &[String]) -> Result<Self, &'static str> {
         let [origin, forum, delivery, agent, tail @ ..] = args else {
-            return Err("usage: hypermesh-visor squad-resume HTTPS_ORIGIN FORUM PLANE_TASK_ID AGENT [CURSOR]");
+            return Err(USAGE);
         };
-        let cursor = match tail {
-            [] => 0,
-            [cursor] => cursor
-                .parse::<u64>()
-                .ok()
-                .filter(|&value| value <= MAX_CURSOR)
-                .ok_or("invalid Squad cursor")?,
-            _ => return Err("unexpected Squad resume arguments"),
+        let (cursor, task) = match tail {
+            [] => (0, None),
+            [cursor, task] if canonical_id(task) => (
+                cursor
+                    .parse::<u64>()
+                    .ok()
+                    .filter(|&value| value <= MAX_CURSOR)
+                    .ok_or("invalid Squad cursor")?,
+                Some(task.clone()),
+            ),
+            _ => return Err(USAGE),
         };
         let mut url = Url::parse(origin).map_err(|_| "invalid Squad origin")?;
         if url.scheme() != "https"
@@ -75,6 +81,7 @@ impl ResumeRequest {
             delivery: delivery.clone(),
             agent: agent.clone(),
             cursor,
+            task,
         })
     }
 
@@ -98,7 +105,9 @@ impl ResumeRequest {
         }
         let value: Value = serde_json::from_slice(&bytes).map_err(|_| "invalid Squad context")?;
         let cursor = value["cursor"].as_u64().ok_or("invalid Squad cursor")?;
-        let valid_task = value["taskId"].as_str().is_some_and(canonical_id);
+        let valid_task = value["taskId"].as_str().is_some_and(|task| {
+            canonical_id(task) && self.task.as_deref().is_none_or(|expected| task == expected)
+        });
         let bound = match value["changed"].as_bool() {
             Some(false) => {
                 cursor == self.cursor
@@ -244,12 +253,28 @@ mod tests {
     fn accepts_an_unchanged_response_at_the_saved_cursor() {
         let mut args = args("https://squad.example.test");
         args.push("4".into());
+        assert!(ResumeRequest::parse(&args).is_err());
+        args.push(TASK.into());
         let request = ResumeRequest::parse(&args).unwrap();
         let value = json!({"taskId":TASK,"cursor":4,"changed":false});
         assert_eq!(
             request.context(value.to_string().as_bytes()).unwrap(),
             value
         );
+        let wrong_task = json!({"taskId":DELIVERY,"cursor":4,"changed":false});
+        assert!(request.context(wrong_task.to_string().as_bytes()).is_err());
+    }
+
+    #[test]
+    fn a_fresh_handoff_read_can_require_the_original_squad_task() {
+        let mut args = args("https://squad.example.test");
+        args.extend(["0".into(), TASK.into()]);
+        let request = ResumeRequest::parse(&args).unwrap();
+        let mut response = json!({"changed":true, "cursor":4, "taskId":TASK,
+            "planeTaskId":DELIVERY, "delegate":request.agent});
+        assert!(request.context(response.to_string().as_bytes()).is_ok());
+        response["taskId"] = json!(DELIVERY);
+        assert!(request.context(response.to_string().as_bytes()).is_err());
     }
 
     #[test]

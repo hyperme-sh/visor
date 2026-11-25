@@ -62,6 +62,8 @@ pub struct AppState {
     host_bridge: Option<crate::host_bridge::Bridge>,
     tasks: tasks::Queue,
     coding_status: Mutex<serde_json::Value>,
+    forum_publications: Mutex<HashMap<Uuid, remote_bot::Publication>>,
+    forum_reporter_exchange: tokio::sync::Mutex<()>,
     sessions: Mutex<HashMap<Uuid, Session>>,
     desktop: Arc<dyn Desktop>,
     watch_poll: Duration,
@@ -188,6 +190,8 @@ impl AppState {
             host_bridge: None,
             tasks: tasks::Queue::new(),
             coding_status: Mutex::new(serde_json::json!({})),
+            forum_publications: Mutex::new(HashMap::new()),
+            forum_reporter_exchange: tokio::sync::Mutex::new(()),
             sessions: Mutex::new(HashMap::new()),
             selected_session: Mutex::new(None),
             selected_approved: AtomicBool::new(false),
@@ -863,6 +867,7 @@ fn routes(state: Arc<AppState>, from_companion: bool) -> Router {
         .route("/continue/start", post(continue_tasks::start))
         .route("/continue/control", post(continue_tasks::control))
         .route("/coding/status", get(coding_tasks::status))
+        .route("/squad/publish", post(remote_bot::publish))
         .route("/acp/context", get(acp_machine::context))
         .route("/acp/prompt", post(acp_machine::prompt))
         .route("/permissions/context", get(permissions::context))

@@ -23,16 +23,20 @@ internal static class Destinations
         }
         else if (!Uri.TryCreate(text, UriKind.Absolute, out var uri) || uri.Scheme != "https" ||
             string.IsNullOrEmpty(uri.Host) || uri.UserInfo.Length != 0 || uri.Fragment.Length != 0 ||
-            (text.Contains('?') && !SquadTaskQuery(uri)))
+            !ForumQuery(uri, text))
             throw new InvalidOperationException("Invalid forum URL");
         return text;
     }
 
-    private static bool SquadTaskQuery(Uri uri)
+    private static bool ForumQuery(Uri uri, string text)
     {
-        if (uri.AbsolutePath != "/feed/squad/live" || !uri.Query.StartsWith("?task=", StringComparison.Ordinal))
+        int start = text.IndexOf('?');
+        if (start < 0)
+            return true;
+        string query = text[(start + 1)..];
+        if (uri.AbsolutePath != "/feed/squad/live" || !query.StartsWith("task=", StringComparison.Ordinal))
             return false;
-        string task = uri.Query[6..];
+        string task = query[5..];
         return Guid.TryParseExact(task, "D", out Guid id) && task == id.ToString("D") &&
             task[14] is >= '1' and <= '8' && task[19] is '8' or '9' or 'a' or 'b';
     }

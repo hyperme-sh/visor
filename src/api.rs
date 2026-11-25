@@ -776,6 +776,14 @@ pub fn router(state: Arc<AppState>) -> Router {
     routes(state, false)
 }
 
+fn control_router(state: Arc<AppState>) -> Router {
+    let publication = Router::new()
+        .route("/squad/publish", post(remote_bot::publish))
+        .layer(middleware::from_fn_with_state(state.clone(), managed_admission))
+        .with_state(state.clone());
+    router(state).merge(publication)
+}
+
 /// Native UI authority stays in-process, never on an external socket.
 pub(crate) fn socket_companion_router(state: Arc<AppState>) -> Router {
     if state.desktop.backend_name().starts_with("macos") || state.desktop.backend_name().starts_with("windows") { router(state) }
@@ -867,7 +875,6 @@ fn routes(state: Arc<AppState>, from_companion: bool) -> Router {
         .route("/continue/start", post(continue_tasks::start))
         .route("/continue/control", post(continue_tasks::control))
         .route("/coding/status", get(coding_tasks::status))
-        .route("/squad/publish", post(remote_bot::publish))
         .route("/acp/context", get(acp_machine::context))
         .route("/acp/prompt", post(acp_machine::prompt))
         .route("/permissions/context", get(permissions::context))
@@ -1262,7 +1269,7 @@ pub async fn serve_until(
         )
         .await
     });
-    let control_app = router(Arc::clone(&state));
+    let control_app = control_router(Arc::clone(&state));
     let control_stop = cancel_rx.clone();
     let control = tokio::spawn(async move {
         crate::companion_sock::accept_loop(control_listener, control_app, "control", control_stop)

@@ -447,12 +447,8 @@ impl ArtifactResult {
 
 pub(super) async fn publish(
     State(state): State<Arc<AppState>>,
-    Extension(link): Extension<CompanionLink>,
     Json(body): Json<PublishRequest>,
 ) -> Result<Json<ArtifactResult>, ApiError> {
-    if !link.0 {
-        return Err(ApiError::forbidden("Local companion socket required"));
-    }
     let scope = lock(&state.forum_publications)
         .get(&body.plane_task_id)
         .cloned()
@@ -732,6 +728,7 @@ mod tests {
     #[tokio::test]
     async fn artifacts_use_the_completed_delivery_and_original_consent() {
         use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+        use tower::ServiceExt;
 
         let dir = std::env::temp_dir().join(format!("visor-artifact-{}", Uuid::new_v4()));
         crate::companion_sock::prepare_dir(&dir).unwrap();
@@ -773,6 +770,10 @@ mod tests {
             )
         };
         let expected = json!({"version": 1, "taskId": project, "artifactId": artifact, "revisionId": revision});
+        let http_request = || Request::post("/squad/publish")
+            .header("content-type", "application/json")
+            .body(Body::from(json!({"planeTaskId":plane, "artifact":body}).to_string()))
+            .unwrap();
         let publisher = tokio::spawn({
             let expected = expected.clone();
             let body = body.clone();
@@ -800,25 +801,21 @@ mod tests {
                 }
             }
         });
-        for (link, task) in [(false, plane), (true, Uuid::new_v4())] {
-            assert!(matches!(
-                publish(State(state.clone()), Extension(CompanionLink(link)), request(task)).await,
-                Err(error) if error.status == StatusCode::FORBIDDEN,
-            ));
-        }
-        for _ in 0..2 {
-            let result = publish(
-                State(state.clone()),
-                Extension(CompanionLink(true)),
-                request(plane),
-            )
-            .await
-            .map_err(|error| error.message)
-            .unwrap();
-            assert_eq!(serde_json::to_value(result.0).unwrap(), expected);
+        for app in [router(state.clone()), socket_companion_router(state.clone())] {
+            assert_eq!(app.oneshot(http_request()).await.unwrap().status(), StatusCode::NOT_FOUND);
         }
         assert!(matches!(
-            publish(State(state.clone()), Extension(CompanionLink(true)), request(plane)).await,
+            publish(State(state.clone()), request(Uuid::new_v4())).await,
+            Err(error) if error.status == StatusCode::FORBIDDEN,
+        ));
+        let response = control_router(state.clone()).oneshot(http_request()).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let reply = axum::body::to_bytes(response.into_body(), 1024).await.unwrap();
+        assert_eq!(serde_json::from_slice::<Value>(&reply).unwrap(), expected);
+        let result = publish(State(state.clone()), request(plane)).await.map_err(|error| error.message).unwrap();
+        assert_eq!(serde_json::to_value(result.0).unwrap(), expected);
+        assert!(matches!(
+            publish(State(state.clone()), request(plane)).await,
             Err(error) if error.status == StatusCode::CONFLICT,
         ));
         publisher.await.unwrap();
@@ -829,7 +826,7 @@ mod tests {
             .control(Some(session), automation::Control::Start)
             .unwrap();
         assert!(matches!(
-            publish(State(state.clone()), Extension(CompanionLink(true)), request(plane)).await,
+            publish(State(state.clone()), request(plane)).await,
             Err(error) if error.status == StatusCode::FORBIDDEN,
         ));
         std::fs::remove_dir_all(dir).unwrap();

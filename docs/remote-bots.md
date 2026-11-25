@@ -153,7 +153,7 @@ object containing `kind` and `draft` to stdin. The supported kinds are
 Squad artifact contract, including the Squad task ID and stable artifact and
 revision IDs.
 
-The command uses the same user's Visor companion socket. Visor reads the
+The command uses the same user's private Visor control socket. Visor reads the
 current completed delivery from Plane and supplies its bot, assignment,
 session and delivery fields to the configured reporter. The original local
 consent and editor deadline still govern the submission. Squad checks the

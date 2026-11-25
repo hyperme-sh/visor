@@ -36,17 +36,17 @@ fn request_body(
 }
 
 async fn publish(body: Vec<u8>) -> Result<Bytes, &'static str> {
-    let socket = hypermesh_visor::runtime_dir()
-        .map_err(|_| "could not resolve Visor runtime")?
-        .join("companion.sock");
+    let runtime = hypermesh_visor::runtime_dir()
+        .map_err(|_| "could not resolve Visor runtime")?;
+    let socket = hypermesh_visor::control_socket_file(&runtime);
     let endpoint = hypermesh_local_transport::Endpoint::unix(socket)
-        .map_err(|_| "invalid Visor companion socket")?;
+        .map_err(|_| "invalid Visor control socket")?;
     let stream = hypermesh_local_transport::connect(&endpoint)
         .await
-        .map_err(|_| "could not reach private Visor companion socket")?;
+        .map_err(|_| "could not reach private Visor control socket")?;
     let (mut sender, connection) = hyper::client::conn::http1::handshake(TokioIo::new(stream))
         .await
-        .map_err(|_| "Visor companion handshake failed")?;
+        .map_err(|_| "Visor control handshake failed")?;
     tokio::spawn(async move {
         let _ = connection.await;
     });

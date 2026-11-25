@@ -120,3 +120,19 @@ to the Visor user. Visor sends the delivery binding and terminal status
 only. It stops waiting as soon as the local consent epoch changes. The
 reporter owns the forum signing key and submits the signed status through
 delivery-bound admission.
+
+### Resume an enrolled Squad project task
+
+On desktop or headless Visor, an enrolled harness can use
+`hypermesh-visor squad-resume HTTPS_ORIGIN FORUM PLANE_TASK_ID AGENT [CURSOR]`.
+Pass the current bearer from the s3r.ch agent challenge and exchange through
+stdin and close the stream. Set the trusted Squad origin and enrolled SEA
+principal from the harness configuration. Use the Plane task ID on the current
+delivery, rather than the forum's source task ID or delivery nonce.
+
+The command reads the existing Squad project endpoint and writes its compact
+JSON response to stdout, including the canonical Squad task ID. Use the returned
+cursor for an incremental read, or start from zero when the harness needs the
+full assigned context after restarting. Squad checks the current delegate and
+forum grants. Keep the response within the authorized harness. Linked sources
+retain their own access checks.

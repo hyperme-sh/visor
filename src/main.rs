@@ -1,5 +1,6 @@
 #[cfg(target_os = "linux")]
 mod managed_conductor;
+mod squad_resume;
 #[cfg(feature = "desktop")]
 use hypermesh_visor::LinuxDesktop;
 use std::io::{self, Write};
@@ -27,11 +28,20 @@ struct Options {
 }
 
 fn main() -> ExitCode {
+    let mut args = std::env::args().skip(1).peekable();
+    if args.peek().is_some_and(|arg| arg == "squad-resume") {
+        args.next();
+        if current_euid() == 0 {
+            eprintln!("hypermesh-visor: refusing to run as root");
+            return ExitCode::from(1);
+        }
+        return squad_resume::run(args, io::stdin().lock(), io::stdout().lock());
+    }
     let _reports = hypermesh_visor::telemetry::init(
         hypermesh_visor::telemetry::Component::Daemon,
         env!("CARGO_PKG_VERSION"),
     );
-    let options = match parse_args() {
+    let options = match parse_args_from(args) {
         Ok(Some(options)) => options,
         Ok(None) => return ExitCode::SUCCESS,
         Err(message) => {
@@ -209,10 +219,6 @@ fn main() -> ExitCode {
     ExitCode::SUCCESS
 }
 
-fn parse_args() -> Result<Option<Options>, String> {
-    parse_args_from(std::env::args().skip(1))
-}
-
 fn parse_args_from<I>(args: I) -> Result<Option<Options>, String>
 where
     I: IntoIterator<Item = String>,
@@ -283,6 +289,7 @@ where
                     "hypermesh-visor [--crash-consent enable|disable] [--tcp] [--listen 127.0.0.1:9847] [--fixture --fixture-log PATH]\n\
                      [--supervisor-url URL] [--supervisor-url-2 URL] [--default-model {DEFAULT_CATALOG_ID}]\n\
                      [--route CATALOG=URL] [--experts CATALOG] [--expert-answer CATALOG=URL]\n\
+                     hypermesh-visor squad-resume HTTPS_ORIGIN FORUM PLANE_TASK_ID AGENT [CURSOR]\n\
                      The control API listens on control.sock in the runtime directory.\n\
                      --tcp or HYPERMESH_TCP=1 also opens a loopback port. Every request on that\n\
                      port needs the bearer in api.token. --listen sets that port and must be loopback.\n\

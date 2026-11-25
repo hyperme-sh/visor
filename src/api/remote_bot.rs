@@ -761,6 +761,14 @@ mod tests {
         let draft = json!({"taskId": project, "artifactId": artifact, "revisionId": revision,
             "base": null, "markdown": "10 seats for 30 days"});
         let body = json!({"kind": "brief", "draft": draft});
+        let workbook_revision = Uuid::new_v4();
+        let workbook = json!({"kind":"workbook", "draft":{"taskId":project,
+            "artifactId":Uuid::new_v4(), "revisionId":workbook_revision,
+            "inputs":{"quantity":10,"unitPriceCents":12000,"discountBps":0}}});
+        let preview = json!({"kind":"preview", "draft":{"taskId":project,
+            "artifactId":Uuid::new_v4(), "revisionId":Uuid::new_v4(), "base":null,
+            "briefRevisionId":revision, "workbookRevisionId":workbook_revision,
+            "copy":{"title":"Partner pilot","summary":"10 seats for 30 days","highlights":[],"nextStep":"Confirm the quote"}}});
         let request = |task: Uuid| {
             Json(
                 serde_json::from_value(json!({
@@ -770,15 +778,14 @@ mod tests {
             )
         };
         let expected = json!({"version": 1, "taskId": project, "artifactId": artifact, "revisionId": revision});
-        let http_request = || Request::post("/squad/publish")
+        let http_request = |artifact: &Value| Request::post("/squad/publish")
             .header("content-type", "application/json")
-            .body(Body::from(json!({"planeTaskId":plane, "artifact":body}).to_string()))
+            .body(Body::from(json!({"planeTaskId":plane, "artifact":artifact}).to_string()))
             .unwrap();
         let publisher = tokio::spawn({
-            let expected = expected.clone();
-            let body = body.clone();
+            let drafts = [body.clone(), body.clone(), body.clone(), workbook.clone(), preview.clone()];
             async move {
-                for attempt in 0..3 {
+                for (attempt, body) in drafts.into_iter().enumerate() {
                     let (stream, _) = reporter.accept().await.unwrap();
                     let mut stream = BufReader::new(stream);
                     let mut frame = String::new();
@@ -789,7 +796,9 @@ mod tests {
                             "version": 1, "report": report, "artifact": body,
                         })
                     );
-                    let mut response = expected.clone();
+                    let draft = &body["draft"];
+                    let mut response = json!({"version":1,"taskId":draft["taskId"],
+                        "artifactId":draft["artifactId"],"revisionId":draft["revisionId"]});
                     if attempt == 2 {
                         response["revisionId"] = json!(Uuid::new_v4());
                     }
@@ -802,13 +811,13 @@ mod tests {
             }
         });
         for app in [router(state.clone()), socket_companion_router(state.clone())] {
-            assert_eq!(app.oneshot(http_request()).await.unwrap().status(), StatusCode::NOT_FOUND);
+            assert_eq!(app.oneshot(http_request(&body)).await.unwrap().status(), StatusCode::NOT_FOUND);
         }
         assert!(matches!(
             publish(State(state.clone()), request(Uuid::new_v4())).await,
             Err(error) if error.status == StatusCode::FORBIDDEN,
         ));
-        let response = control_router(state.clone()).oneshot(http_request()).await.unwrap();
+        let response = control_router(state.clone()).oneshot(http_request(&body)).await.unwrap();
         assert_eq!(response.status(), StatusCode::OK);
         let reply = axum::body::to_bytes(response.into_body(), 1024).await.unwrap();
         assert_eq!(serde_json::from_slice::<Value>(&reply).unwrap(), expected);
@@ -818,6 +827,15 @@ mod tests {
             publish(State(state.clone()), request(plane)).await,
             Err(error) if error.status == StatusCode::CONFLICT,
         ));
+        for artifact in [workbook, preview] {
+            let response = control_router(state.clone()).oneshot(http_request(&artifact)).await.unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            let reply = axum::body::to_bytes(response.into_body(), 1024).await.unwrap();
+            let reply: Value = serde_json::from_slice(&reply).unwrap();
+            for field in ["taskId", "artifactId", "revisionId"] {
+                assert_eq!(reply[field], artifact["draft"][field]);
+            }
+        }
         publisher.await.unwrap();
         lock(&state.automation)
             .control(Some(session), automation::Control::Pause)

@@ -1,4 +1,5 @@
 //! Public plugin packages are immutable for the duration of a local grant.
+pub(crate) mod github;
 pub(crate) mod publication;
 pub(crate) mod stdio;
 pub(crate) mod store;
@@ -89,9 +90,18 @@ struct Tool {
 }
 
 #[derive(Clone, Deserialize, PartialEq, Serialize)]
-enum Scope {
+pub(crate) enum Scope {
     #[serde(rename = "workspace.read")]
     WorkspaceRead,
+    #[serde(rename = "github.issue.read")]
+    GitHubIssueRead,
+}
+
+#[derive(Clone, Deserialize)]
+#[serde(untagged)]
+pub(crate) enum Target {
+    Workspace(String),
+    GitHub(github::Selection),
 }
 
 #[derive(Deserialize)]
@@ -180,6 +190,9 @@ impl Descriptor {
             if !slug(&entry.name) || !names.insert(&entry.name) {
                 return Err(Error::Package);
             }
+            if entry.scope == Scope::GitHubIssueRead && version == 0 {
+                return Err(Error::Incompatible);
+            }
         }
         Ok(Self {
             manifest,
@@ -241,6 +254,16 @@ impl Package {
         &self.manifest.id
     }
 
+    pub(crate) fn allows(&self, target: &Target) -> bool {
+        match (&self.tool.scope, target) {
+            (Scope::WorkspaceRead, Target::Workspace(path)) => {
+                path.len() <= 4096 && Path::new(path).is_absolute()
+            }
+            (Scope::GitHubIssueRead, Target::GitHub(selection)) => selection.valid(),
+            _ => false,
+        }
+    }
+
     fn metadata(&self) -> Value {
         json!({
             "id": self.manifest.id,
@@ -287,7 +310,7 @@ impl Package {
 
 pub(crate) struct Grant {
     pub package: Package,
-    pub target: String,
+    pub target: Target,
     ended: AtomicBool,
     running: AtomicBool,
 }
@@ -321,7 +344,7 @@ impl Grants {
         &mut self,
         session: Uuid,
         package: Package,
-        target: String,
+        target: Target,
     ) -> Option<Value> {
         let key = (session, package.key().to_owned());
         if self.0.len() >= MAX_GRANTS || self.0.contains_key(&key) {

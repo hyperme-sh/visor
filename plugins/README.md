@@ -57,7 +57,10 @@ Discovery uses the digest-selected manifest and advertises only the tool
 enabled for that session. Both input and output are JSON objects validated
 against the tool's schemas. Local JSON Schema references are permitted.
 The `workspace.read` scope supplies only `content_base64` from one admitted
-file read, up to 32 KiB before encoding. The application can return a
+file read, up to 32 KiB before encoding. The `github.issue.read` scope uses API 1 and supplies
+only a bounded public issue from the account and repository in the owner
+grant. See the [GitHub issue pilot](github-issue/README.md) for that scope.
+The application can return a
 JSON-RPC error with an integer code and message. For example, use
 `-32601` for an unknown tool, `-32602` for invalid input, and `-32603` for a
 failed tool. Visor reports an error category without repeating plugin text.

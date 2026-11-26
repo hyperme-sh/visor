@@ -488,3 +488,218 @@ async fn independent_package_uses_owner_admission() {
     assert!(lock(&state.plugins).list(session).is_empty());
     owner.abort();
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "CI supplies the signed GitHub issue plugin package"]
+async fn github_issue_plugin_uses_the_selected_account_and_public_repository() {
+    use crate::plugins::publication::digest;
+
+    const TOKEN: &str = "github_pat_visor_contract_123456789";
+    const PLUGIN: &str = "dev.visor.github-issue";
+    let mode = Arc::new(AtomicUsize::new(0));
+    let calls = Arc::new(AtomicUsize::new(0));
+    let fixture_mode = Arc::clone(&mode);
+    let fixture_calls = Arc::clone(&calls);
+    let fixture = Router::new().fallback(get(move |uri: axum::http::Uri, headers: HeaderMap| {
+        let current = fixture_mode.load(Ordering::Acquire);
+        fixture_calls.fetch_add(1, Ordering::AcqRel);
+        async move {
+            let is_issue = uri.path().ends_with("/issues/7");
+            assert_eq!(headers["x-github-api-version"], "2026-03-10");
+            if is_issue {
+                assert!(!headers.contains_key(header::AUTHORIZATION));
+            } else {
+                assert_eq!(headers[header::AUTHORIZATION], format!("Bearer {TOKEN}"));
+            }
+            let reply = |status, value| (status, Json(value));
+            if current == 2 {
+                return reply(StatusCode::SERVICE_UNAVAILABLE, json!({"message":TOKEN}));
+            }
+            if current == 3 {
+                return reply(StatusCode::UNAUTHORIZED, json!({"message":TOKEN}));
+            }
+            match uri.path() {
+                "/user" => reply(StatusCode::OK, json!({"id":21})),
+                "/repos/Example/Project" => reply(StatusCode::OK, json!({
+                    "full_name":"Example/Project", "private":current == 1,
+                    "visibility":if current == 1 {"private"} else {"public"},
+                })),
+                "/repos/Example/Project/issues/7" if current == 4 => {
+                    reply(StatusCode::NOT_FOUND, json!({"message":"repository just changed visibility"}))
+                }
+                "/repos/Example/Project/issues/7" => reply(StatusCode::OK, json!({
+                    "id":1234, "number":7, "title":"Fixture issue", "body":TOKEN, "state":"open",
+                    "repository_url":"https://api.github.com/repos/Example/Project",
+                    "html_url":"https://github.com/Example/Project/issues/7",
+                    "labels":[{"name":"excluded"}],
+                })),
+                _ => panic!("unexpected fixture endpoint"),
+            }
+        }
+    }));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let fixture = tokio::spawn(async move { axum::serve(listener, fixture).await.unwrap() });
+
+    let root = Temp(std::env::temp_dir().join(format!("vgh-{}", Uuid::new_v4().simple())));
+    hypermesh_local_storage::create_dir(&root.0).unwrap();
+    let mut state = AppState::new(FakeDesktop::new(), Duration::from_millis(20));
+    state.mcp_dir = root.0.clone();
+    state.github_fixture = Some(address);
+    let state = Arc::new(state);
+    let companion = companion_router(state.clone());
+    let regular = routes(state.clone(), false);
+    let opened = request(
+        &companion,
+        "POST",
+        "/session",
+        json!({
+            "purpose":"GitHub issue contract","recipes":[],"skills":[],
+            "agent":{"name":"desk","instructions":""},
+            "secrets":[{"name":crate::vault::GITHUB_ISSUES_SECRET,"source":"local","value":TOKEN}]
+        }),
+    )
+    .await;
+    assert_eq!(opened.status(), StatusCode::CREATED);
+    let session: Uuid = serde_json::from_value(body(opened).await["id"].clone()).unwrap();
+    lock(&state.automation)
+        .control(Some(session), Control::Start)
+        .unwrap();
+    assert!(lock(&state.sessions)[&session]
+        .vault()
+        .get(crate::vault::GITHUB_ISSUES_SECRET)
+        .is_none());
+
+    let package = PathBuf::from(std::env::var_os("VISOR_GITHUB_ISSUE_PUBLICATION").unwrap());
+    let installed = request(
+        &companion,
+        "POST",
+        "/plugins",
+        json!({
+            "source":package, "publication_sha256":digest(&std::fs::read(&package).unwrap()),
+            "expected_revision":null,
+        }),
+    )
+    .await;
+    assert_eq!(installed.status(), StatusCode::CREATED);
+    let installed = body(installed).await;
+    let target = json!({"account":21,"repository":"Example/Project"});
+    let enable = json!({
+        "target":target,"tool":"read-issue","plugin_id":PLUGIN,"revision":installed["revision"]
+    });
+    let grants = format!("/session/{session}/plugins");
+    let plugin = format!("{grants}/{PLUGIN}");
+    let read = format!("{plugin}/github-issue");
+    assert_eq!(
+        request(&companion, "POST", &grants, enable.clone())
+            .await
+            .status(),
+        StatusCode::CREATED
+    );
+    let summary = body(request(&companion, "GET", &read, Value::Null).await).await;
+    assert_eq!(summary["state"], "active");
+    assert_eq!(summary["package_version"], "0.1.0");
+    assert_eq!(summary["publisher"]["verification"], "community");
+    assert_eq!(
+        summary["access"],
+        json!({"scope":"github.issue.read","target":target})
+    );
+
+    let call = json!({"target":target,"number":7});
+    assert_eq!(
+        request(&regular, "POST", &read, call.clone())
+            .await
+            .status(),
+        StatusCode::FORBIDDEN
+    );
+    let wrong = json!({"target":{"account":21,"repository":"Example/Other"},"number":7});
+    assert_eq!(
+        request(&companion, "POST", &read, wrong).await.status(),
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(calls.load(Ordering::Acquire), 0);
+    let result = body(request(&companion, "POST", &read, call.clone()).await).await;
+    assert_eq!(
+        result,
+        json!({"result":{
+            "id":1234,"number":7,"title":"Fixture issue","state":"open","body":"[redacted]",
+            "url":"https://github.com/Example/Project/issues/7",
+        }})
+    );
+    assert_eq!(calls.load(Ordering::Acquire), 3);
+
+    mode.store(1, Ordering::Release);
+    assert_eq!(
+        request(&companion, "POST", &read, call.clone())
+            .await
+            .status(),
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(calls.load(Ordering::Acquire), 5);
+    mode.store(4, Ordering::Release);
+    assert_eq!(
+        request(&companion, "POST", &read, call.clone())
+            .await
+            .status(),
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(calls.load(Ordering::Acquire), 8);
+
+    mode.store(2, Ordering::Release);
+    let unavailable = request(&companion, "POST", &read, call.clone()).await;
+    assert_eq!(unavailable.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(
+        body(unavailable).await["error"]["code"],
+        "github_unavailable"
+    );
+    assert_eq!(
+        request(&companion, "GET", "/plugins", Value::Null)
+            .await
+            .status(),
+        StatusCode::OK
+    );
+    mode.store(0, Ordering::Release);
+    assert_eq!(
+        request(&companion, "POST", &read, call.clone())
+            .await
+            .status(),
+        StatusCode::OK
+    );
+
+    mode.store(3, Ordering::Release);
+    let revoked = request(&companion, "POST", &read, call.clone()).await;
+    assert_eq!(revoked.status(), StatusCode::FORBIDDEN);
+    assert_eq!(
+        body(revoked).await["error"]["code"],
+        "github_credential_revoked"
+    );
+    assert_eq!(
+        body(request(&companion, "GET", &read, Value::Null).await).await["state"],
+        "revoked"
+    );
+    let before = calls.load(Ordering::Acquire);
+    assert_eq!(
+        request(&companion, "POST", &read, call.clone())
+            .await
+            .status(),
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(calls.load(Ordering::Acquire), before);
+
+    assert_eq!(
+        request(&companion, "POST", &grants, enable).await.status(),
+        StatusCode::CREATED
+    );
+    assert_eq!(
+        request(&companion, "DELETE", &plugin, Value::Null)
+            .await
+            .status(),
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(
+        request(&companion, "POST", &read, call).await.status(),
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(calls.load(Ordering::Acquire), before);
+    fixture.abort();
+}

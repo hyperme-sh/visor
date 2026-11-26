@@ -30,7 +30,7 @@ jobs:
           set -eu
           printf '%s\n' 'deb-src http://deb.debian.org/debian trixie main' > /etc/apt/sources.list.d/visor-source.list
           apt-get -q update
-          apt-get -qy --no-install-recommends install build-essential ca-certificates git ninja-build libei-dev python3-dbusmock python3-pytest
+          apt-get -qy --no-install-recommends install build-essential ca-certificates dbus git ninja-build libei-dev python3-dbusmock python3-pytest
           apt-get -qy --no-install-recommends build-dep kwin xdg-desktop-portal-kde xdg-desktop-portal
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

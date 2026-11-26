@@ -303,10 +303,10 @@ index 569fac2..8dd7f6e 100644
      void deviceRemoved(InputDevice *device);
      /**
 diff --git a/src/plugins/eis/CMakeLists.txt b/src/plugins/eis/CMakeLists.txt
-index 61ac515..76ed6f5 100644
+index 61ac515..574a281 100644
 --- a/src/plugins/eis/CMakeLists.txt
 +++ b/src/plugins/eis/CMakeLists.txt
-@@ -29,3 +29,24 @@ target_sources(eis PRIVATE
+@@ -29,3 +29,26 @@ target_sources(eis PRIVATE
  )
 
  target_link_libraries(eis PRIVATE kwin KF6::I18n KF6::GlobalAccel Libeis::Libeis XKB::XKB)
@@ -325,8 +325,10 @@ index 61ac515..76ed6f5 100644
 +        ${CMAKE_SOURCE_DIR}/autotests/libinput/mock_libinput.cpp
 +    )
 +    target_include_directories(eisLocalTakeoverContract PRIVATE ${CMAKE_SOURCE_DIR}/autotests/libinput)
++    # The contract substitutes libinput symbols called by the real KWin library.
 +    set_target_properties(eisLocalTakeoverContract PROPERTIES
 +        ENABLE_EXPORTS ON
++        CXX_VISIBILITY_PRESET default
 +        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
 +    )
 +    target_link_libraries(eisLocalTakeoverContract PRIVATE kwin Qt::Test Qt::Widgets KF6::ConfigCore KF6::GlobalAccel Libeis::Libeis Libinput::Libinput PkgConfig::TakeoverEI XKB::XKB)

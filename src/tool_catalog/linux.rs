@@ -137,7 +137,8 @@ impl Store {
         machine: &Machine,
         build: impl FnOnce(&Path) -> Result<(), &'static str>,
     ) -> Result<Installation, &'static str> {
-        let _lock = self.lock()?;
+        let lock = self.lock()?;
+        let _release = storage::UnlockOnDrop(&lock);
         let target = self.install_dir();
         if let Some(installation) = self.record(machine)? {
             if installation.source_revision != REVISION || installation.source_sha256 != SOURCE_HASH
@@ -188,7 +189,8 @@ impl Store {
     }
 
     fn health(&self, machine: &Machine) -> Result<Value, &'static str> {
-        let _lock = self.lock()?;
+        let lock = self.lock()?;
+        let _release = storage::UnlockOnDrop(&lock);
         let Some(installation) = self.record(machine)? else {
             return Ok(json!({"tool":ID,"machine":machine,"state":"not_installed"}));
         };
@@ -205,7 +207,8 @@ impl Store {
     }
 
     fn remove(&self, machine: &Machine, installation: Uuid) -> Result<(), &'static str> {
-        let _lock = self.lock()?;
+        let lock = self.lock()?;
+        let _release = storage::UnlockOnDrop(&lock);
         let record = self
             .record(machine)?
             .ok_or("The catalog runner is not installed")?;

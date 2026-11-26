@@ -1,5 +1,7 @@
 //! Public plugin packages are immutable for the duration of a local grant.
+pub(crate) mod publication;
 mod stdio;
+pub(crate) mod store;
 
 use crate::mcp::schema;
 use hypermesh_local_storage as storage;
@@ -77,7 +79,7 @@ enum Profile {
     LocalMcpStdio,
 }
 
-#[derive(Clone, Deserialize, Serialize)]
+#[derive(Clone, Deserialize, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 struct Tool {
     name: String,
@@ -86,7 +88,7 @@ struct Tool {
     output_schema: Value,
 }
 
-#[derive(Clone, Deserialize, Serialize)]
+#[derive(Clone, Deserialize, PartialEq, Serialize)]
 enum Scope {
     #[serde(rename = "workspace.read")]
     WorkspaceRead,
@@ -144,28 +146,28 @@ fn private_bytes(path: &Path, limit: u64) -> Result<Vec<u8>, Error> {
     Ok(bytes)
 }
 
-impl Package {
-    pub(crate) fn load(path: &Path, expected: &str, tool: &str) -> Result<Self, Error> {
-        if !path.is_absolute()
-            || path.file_name() != Some("manifest.json".as_ref())
-            || !path
-                .parent()
-                .is_some_and(|parent| storage::check_dir(parent).is_ok())
-        {
+struct Descriptor {
+    manifest: Manifest,
+    digest: String,
+    version: u32,
+}
+
+impl Descriptor {
+    fn parse(raw: &[u8], expected: &str) -> Result<Self, Error> {
+        if raw.len() > 64 * 1024 {
             return Err(Error::Package);
         }
-        let raw = private_bytes(path, 64 * 1024)?;
-        let digest = format!("{:x}", Sha256::digest(&raw));
+        let digest = format!("{:x}", Sha256::digest(raw));
         if digest != expected {
             return Err(Error::Package);
         }
-        let value: Value = serde_json::from_slice(&raw).map_err(|_| Error::Package)?;
+        let value: Value = serde_json::from_slice(raw).map_err(|_| Error::Package)?;
         let shape: Value = serde_json::from_str(include_str!("schemas/manifest-v1.json"))
             .map_err(|_| Error::Package)?;
         let shape = schema::compile(&shape).map_err(|_| Error::Package)?;
         schema::validate_compiled(&shape, &value).map_err(|_| Error::Package)?;
         // Deserializing the original bytes also refuses duplicate manifest fields.
-        let manifest: Manifest = serde_json::from_slice(&raw).map_err(|_| Error::Package)?;
+        let manifest: Manifest = serde_json::from_slice(raw).map_err(|_| Error::Package)?;
         if manifest.manifest_version != 1 || !valid_id(&manifest.id) {
             return Err(Error::Package);
         }
@@ -179,7 +181,26 @@ impl Package {
                 return Err(Error::Package);
             }
         }
-        let tool = manifest
+        Ok(Self {
+            manifest,
+            digest,
+            version,
+        })
+    }
+
+    fn check_executable(&self, executable: &[u8]) -> Result<(), Error> {
+        if executable.len() as u64 > MAX_EXECUTABLE
+            || !executable.starts_with(b"\x7fELF")
+            || format!("{:x}", Sha256::digest(executable)) != self.manifest.executable_sha256
+        {
+            return Err(Error::Package);
+        }
+        Ok(())
+    }
+
+    fn select(self, executable: Vec<u8>, tool: &str) -> Result<Package, Error> {
+        let tool = self
+            .manifest
             .tools
             .iter()
             .find(|entry| entry.name == tool)
@@ -187,24 +208,36 @@ impl Package {
             .clone();
         let input = schema::compile(&tool.input_schema).map_err(|_| Error::Package)?;
         let output = schema::compile(&tool.output_schema).map_err(|_| Error::Package)?;
-        let executable = private_bytes(&path.with_file_name("plugin"), MAX_EXECUTABLE)?;
-        if !executable.starts_with(b"\x7fELF")
-            || format!("{:x}", Sha256::digest(&executable)) != manifest.executable_sha256
-        {
-            return Err(Error::Package);
-        }
-        Ok(Self {
-            manifest,
-            digest,
+        Ok(Package {
+            manifest: self.manifest,
+            digest: self.digest,
             executable: executable.into(),
             tool,
             input,
             output,
-            version,
+            version: self.version,
         })
     }
+}
 
-    fn key(&self) -> &str {
+impl Package {
+    pub(crate) fn load(path: &Path, expected: &str, tool: &str) -> Result<Self, Error> {
+        if !path.is_absolute()
+            || path.file_name() != Some("manifest.json".as_ref())
+            || !path
+                .parent()
+                .is_some_and(|parent| storage::check_dir(parent).is_ok())
+        {
+            return Err(Error::Package);
+        }
+        let raw = private_bytes(path, 64 * 1024)?;
+        let descriptor = Descriptor::parse(&raw, expected)?;
+        let executable = private_bytes(&path.with_file_name("plugin"), MAX_EXECUTABLE)?;
+        descriptor.check_executable(&executable)?;
+        descriptor.select(executable, tool)
+    }
+
+    pub(crate) fn key(&self) -> &str {
         &self.manifest.id
     }
 
@@ -332,6 +365,16 @@ impl Grants {
         false
     }
 
+    pub(crate) fn revoke_plugin(&mut self, plugin: &str) {
+        self.0.retain(|(_, id), grant| {
+            if id == plugin {
+                grant.ended.store(true, Ordering::Release);
+                return false;
+            }
+            true
+        });
+    }
+
     pub(crate) fn close(&mut self, session: Uuid) {
         self.0.retain(|(id, _), grant| {
             if *id == session {
@@ -341,6 +384,17 @@ impl Grants {
             true
         });
     }
+}
+
+/// Sign the existing package format using an unencrypted Ed25519 PKCS#8 key.
+pub fn build_publication(
+    directory: &Path,
+    signing_key: &[u8],
+    source: &str,
+    publisher_domain: Option<&str>,
+) -> Result<(Vec<u8>, String), String> {
+    publication::sign_package(directory, signing_key, source, publisher_domain)
+        .map_err(publication::Error::message)
 }
 
 /// Test a package in the production sandbox with caller-supplied fixture data.

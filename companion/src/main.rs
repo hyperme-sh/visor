@@ -27,6 +27,8 @@ mod mcp_trust;
 mod mcp_trust_gui;
 mod pack_picker;
 mod pages;
+#[cfg(target_os = "linux")]
+mod plugins;
 mod pointer;
 mod presentation;
 mod prompt;
@@ -76,6 +78,14 @@ fn main() -> ExitCode {
             let Some(workspace)=args.next() else {eprintln!("Select a local workspace");return ExitCode::FAILURE};
             if args.next().is_some(){return ExitCode::FAILURE}
             match continue_tasks::run(&workspace){Ok(())=>ExitCode::SUCCESS,Err(error)=>{eprintln!("Continue task: {error}");ExitCode::FAILURE}}
+        },
+        #[cfg(target_os = "linux")]
+        Some("--plugins") => match plugins::run(args.collect()) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(error) => {
+                eprintln!("hypermesh-companion plugins: {error}");
+                ExitCode::FAILURE
+            }
         },
         Some("--choose-session") => match session_selection::run() {
             Ok(()) => ExitCode::SUCCESS,
@@ -209,7 +219,7 @@ fn main() -> ExitCode {
         }
         Some("-h" | "--help") => {
             println!(
-                "hypermesh-companion\n  --choose-session   select an open session and pause input\n  --session-cli ID   open prompt entry for an existing session\n  --mcp-connections   refresh or reconnect session MCP attachments\n  --mcp-status        show focused-app routing and attachment status\n  --mcp-servers       edit MCP servers in desktop dialogs\n  --mcp-trust-gui     review and revoke MCP trust in desktop dialogs\n  --permissions       edit permission templates and preview access\n  --mcp-profiles      edit MCP profiles in desktop dialogs\n  --mcp-trust         review discovery sources and trust snapshots\n  --dump-frames DIR   write idle, automation and compact render samples\n  --prompt TEXT --session ID [--model NAME] [--visor URL]\n      send one prompt on the visor stream\n\nThe bug plays the animated states in companion/assets/states.\nWhile the visor drives the desktop the pointer is the bug cursor.\nBug cursor outside an automation is off unless companion.toml sets bug_cursor.\nsleep_after_secs (default 900) and automation_resume_secs (default 120)\nare read from that file at startup."
+                "hypermesh-companion\n  --choose-session   select an open session and pause input\n  --session-cli ID   open prompt entry for an existing session\n  --plugins --help  manage signed plugin publications on Linux\n  --mcp-connections   refresh or reconnect session MCP attachments\n  --mcp-status        show focused-app routing and attachment status\n  --mcp-servers       edit MCP servers in desktop dialogs\n  --mcp-trust-gui     review and revoke MCP trust in desktop dialogs\n  --permissions       edit permission templates and preview access\n  --mcp-profiles      edit MCP profiles in desktop dialogs\n  --mcp-trust         review discovery sources and trust snapshots\n  --dump-frames DIR   write idle, automation and compact render samples\n  --prompt TEXT --session ID [--model NAME] [--visor URL]\n      send one prompt on the visor stream\n\nThe bug plays the animated states in companion/assets/states.\nWhile the visor drives the desktop the pointer is the bug cursor.\nBug cursor outside an automation is off unless companion.toml sets bug_cursor.\nsleep_after_secs (default 900) and automation_resume_secs (default 120)\nare read from that file at startup."
             );
             ExitCode::SUCCESS
         }

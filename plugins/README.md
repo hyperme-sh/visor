@@ -28,6 +28,8 @@ hash when enabling one tool. A new binary or manifest needs a new grant. A
 namespace identifies the package. Publisher verification belongs to the catalog
 and distribution layer and conveys no permission to invoke a tool.
 
+To share a package from your repository, see [signed distribution and installation](distribution.md).
+
 ## Local stdio
 
 Visor starts one isolated process per invocation. Stdout contains one UTF-8
@@ -112,6 +114,10 @@ AIuditor review and admission. Every invocation uses that path.
 | `GET /session/{id}/plugins` | Returns enabled packages and tool schemas for the current session. |
 | `POST /session/{id}/plugins/{plugin-id}/call` | Send the existing permission-read JSON body with `request_id`, `session_id`, saved `selection`, exact `target`, `max_bytes`, and `timeout_seconds`. Returns a JSON stream with `{"result":{…}}` or `{"error":{"code":"…","message":"…"}}`. |
 | `DELETE /session/{id}/plugins/{plugin-id}` | Revokes the grant and cancels an active invocation. Returns 204. |
+
+The [distribution guide](distribution.md) shows activation by installed
+revision. The manifest path above is available for explicitly selected
+development packages with IDs free in the installed store.
 
 Grants are local to a session and end when it closes or Visor restarts.
 One call per grant can run at a time and caller-supplied limits are capped

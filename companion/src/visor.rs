@@ -608,6 +608,30 @@ pub fn trust_request(
     serde_json::from_str(body).map_err(|_| "Invalid or oversized visor response".into())
 }
 
+#[cfg(target_os = "linux")]
+pub fn plugin_request(method: &str, path: &str, body: &serde_json::Value) -> Result<serde_json::Value, String> {
+    let body = if body.is_null() { String::new() } else { body.to_string() };
+    let request = format!(
+        "{method} {path} HTTP/1.0\r\nhost: hypermesh\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    let socket = socket_path().ok_or("Companion socket unavailable")?;
+    let Exchange::Body(response) = exchange_read_bound(&socket, &request, Duration::from_secs(35), 3 * 1024 * 1024) else {
+        return Err("Refresh installed plugins to check whether the operation completed".into());
+    };
+    let content = body_of(&response).unwrap_or_default();
+    if status_ok(&response) {
+        if content.trim().is_empty() {
+            return Ok(serde_json::json!({}));
+        }
+        return serde_json::from_str(content).map_err(|_| "Invalid plugin response".into());
+    }
+    let json: serde_json::Value = serde_json::from_str(content).unwrap_or_default();
+    let text = json["error"]["message"].as_str().or_else(|| json["error"].as_str())
+        .unwrap_or("Plugin operation refused");
+    Err(text.chars().take(240).flat_map(char::escape_default).collect())
+}
+
 fn exchange_read(path: &Path, request: &str) -> Exchange {
     exchange_read_timeout(path, request, Duration::from_millis(300))
 }

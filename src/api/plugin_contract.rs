@@ -36,7 +36,9 @@ async fn body(response: Response) -> Value {
 #[ignore = "CI builds the separate plugin packages and provides VISOR_PLUGIN_CONTRACT_DIR"]
 async fn independent_package_uses_owner_admission() {
     use crate::permission_templates::{Preferences, Preset, Scope, Selection};
+    use crate::plugins::publication::{digest, fixtures::sign};
     use sha2::{Digest, Sha256};
+    use std::io::Write;
 
     let packages = PathBuf::from(std::env::var_os("VISOR_PLUGIN_CONTRACT_DIR").unwrap());
     let root = Temp(std::env::temp_dir().join(format!("vplug-{}", Uuid::new_v4().simple())));
@@ -209,12 +211,87 @@ async fn independent_package_uses_owner_admission() {
     assert_eq!(admit, json!({"result":{"byte_count":11}}));
     assert_eq!(admitted.load(Ordering::Acquire), 1);
 
+    let publish = |name: &str, version: &str, extra_tool: bool, seed| {
+        let package = packages.join(name);
+        let mut manifest: Value =
+            serde_json::from_slice(&std::fs::read(package.join("manifest.json")).unwrap()).unwrap();
+        manifest["package_version"] = json!(version);
+        if extra_tool {
+            let mut tool = manifest["tools"][0].clone();
+            tool["name"] = json!("count-lines");
+            manifest["tools"].as_array_mut().unwrap().push(tool);
+        }
+        let (signed, _) = sign(
+            &manifest,
+            &std::fs::read(package.join("plugin")).unwrap(),
+            None,
+            seed,
+        );
+        let path = root.0.join(format!("{name}-{seed}.visor-plugin"));
+        hypermesh_local_storage::open(&path, hypermesh_local_storage::Open::New)
+            .unwrap()
+            .write_all(&signed)
+            .unwrap();
+        (path, digest(&signed))
+    };
+
+    let author = PathBuf::from(std::env::var_os("VISOR_PLUGIN_PUBLICATION").unwrap());
+    let author = body(
+        request(
+            &companion,
+            "POST",
+            "/plugins/inspect",
+            json!({"source":author}),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(author["publication"]["id"], "org.example.byte-count");
     assert_eq!(
-        request(&companion, "DELETE", &plugin_path, Value::Null)
+        author["publication"]["publisher"]["verification"],
+        "community"
+    );
+
+    let (current, current_digest) = publish("current", "0.1.0", false, 10);
+    let preview = body(
+        request(
+            &companion,
+            "POST",
+            "/plugins/inspect",
+            json!({"source":current}),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(
+        preview["publication"]["publisher"]["verification"],
+        "community"
+    );
+    assert_eq!(preview["publication"]["scan_status"], "not_scanned");
+    assert_eq!(preview["publication"]["publication_sha256"], current_digest);
+    assert_eq!(preview["added_or_changed_tools"], json!(["count-bytes"]));
+    assert!(preview["installed"].is_null());
+    assert_eq!(
+        request(&public, "GET", "/plugins", Value::Null)
             .await
             .status(),
-        StatusCode::NO_CONTENT
+        StatusCode::FORBIDDEN
     );
+    let receipt = request(
+        &companion,
+        "POST",
+        "/plugins",
+        json!({"source":current,"publication_sha256":current_digest,"expected_revision":null}),
+    )
+    .await;
+    assert_eq!(receipt.status(), StatusCode::CREATED);
+    let installed = body(receipt).await;
+    let installed_url = "/plugins/org.example.byte-count";
+    let activate = |entry: &Value, tool: &str| {
+        json!({
+            "plugin_id":"org.example.byte-count","revision":entry["revision"],"tool":tool,"target":target
+        })
+    };
     assert_eq!(
         request(&companion, "POST", &call_path, call(&target))
             .await
@@ -222,12 +299,74 @@ async fn independent_package_uses_owner_admission() {
         StatusCode::NOT_FOUND
     );
     assert_eq!(
-        request(&companion, "POST", &list_path, install("slow"))
+        request(
+            &companion,
+            "POST",
+            &list_path,
+            activate(&installed, "count-bytes")
+        )
+        .await
+        .status(),
+        StatusCode::CREATED
+    );
+    let result = body(request(&companion, "POST", &call_path, call(&target)).await).await;
+    assert_eq!(result, json!({"result":{"byte_count":11}}));
+    assert_eq!(admitted.load(Ordering::Acquire), 2);
+
+    let (imposter, imposter_digest) = publish("slow", "0.1.1", true, 88);
+    assert_eq!(
+        request(&companion, "POST", "/plugins",
+            json!({"source":imposter,"publication_sha256":imposter_digest,"expected_revision":installed["revision"]}))
+            .await.status(),
+        StatusCode::FORBIDDEN
+    );
+    let (update, update_digest) = publish("slow", "0.1.1", true, 10);
+    let review = body(
+        request(
+            &companion,
+            "POST",
+            "/plugins/inspect",
+            json!({"source":update}),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(review["added_or_changed_tools"], json!(["count-lines"]));
+    assert_eq!(review["installed"]["revision"], installed["revision"]);
+    let updated = request(&companion, "POST", "/plugins",
+        json!({"source":update,"publication_sha256":update_digest,"expected_revision":installed["revision"]})).await;
+    assert_eq!(updated.status(), StatusCode::OK);
+    let updated = body(updated).await;
+    assert_eq!(
+        request(&companion, "POST", &call_path, call(&target))
             .await
             .status(),
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        request(
+            &companion,
+            "POST",
+            &list_path,
+            activate(&installed, "count-bytes")
+        )
+        .await
+        .status(),
+        StatusCode::CONFLICT
+    );
+    assert_eq!(
+        request(
+            &companion,
+            "POST",
+            &list_path,
+            activate(&updated, "count-bytes")
+        )
+        .await
+        .status(),
         StatusCode::CREATED
     );
     let pending = request(&companion, "POST", &call_path, call(&target)).await;
+
     let scratch = root.0.join("plugin-scratch");
     tokio::time::timeout(Duration::from_secs(5), async {
         while std::fs::read_dir(&scratch)
@@ -240,17 +379,88 @@ async fn independent_package_uses_owner_admission() {
     })
     .await
     .expect("slow package started");
-    assert_eq!(admitted.load(Ordering::Acquire), 2);
-    assert_eq!(
-        request(&companion, "DELETE", &plugin_path, Value::Null)
-            .await
-            .status(),
-        StatusCode::NO_CONTENT
-    );
+    assert_eq!(admitted.load(Ordering::Acquire), 3);
+    let disabled = body(
+        request(
+            &companion,
+            "PUT",
+            installed_url,
+            json!({"expected_revision":updated["revision"],"enabled":false}),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(disabled["enabled"], false);
     let stopped = body(pending).await;
     assert_eq!(stopped["error"]["code"], "plugin_cancelled");
-    assert!(std::fs::read_dir(&scratch).unwrap().next().is_none());
+    // The blocking sandbox preparation may be finishing as the stream reports cancellation.
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while std::fs::read_dir(&scratch).unwrap().next().is_some() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("staged executable was removed");
+    assert_eq!(
+        request(
+            &companion,
+            "POST",
+            &list_path,
+            activate(&disabled, "count-bytes")
+        )
+        .await
+        .status(),
+        StatusCode::CONFLICT
+    );
 
+    let restored = body(
+        request(
+            &companion,
+            "PUT",
+            installed_url,
+            json!({"expected_revision":disabled["revision"],"enabled":true}),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(
+        request(&companion, "POST", &call_path, call(&target))
+            .await
+            .status(),
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        request(
+            &companion,
+            "POST",
+            &list_path,
+            activate(&restored, "count-bytes")
+        )
+        .await
+        .status(),
+        StatusCode::CREATED
+    );
+    assert_eq!(
+        request(
+            &companion,
+            "DELETE",
+            installed_url,
+            json!({"expected_revision":restored["revision"]})
+        )
+        .await
+        .status(),
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(
+        request(&companion, "POST", &call_path, call(&target))
+            .await
+            .status(),
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        body(request(&companion, "GET", "/plugins", Value::Null).await).await,
+        json!({"plugins":[]})
+    );
     assert_eq!(
         request(&companion, "POST", &list_path, install("current"))
             .await

@@ -90,6 +90,19 @@ impl Network {
         seconds: u32,
         valid: impl Fn() -> bool,
     ) -> Result<Value, &'static str> {
+        let output = self.fetch(max, seconds, valid)?;
+        use base64::Engine;
+        Ok(
+            json!({"completed":true,"content_base64":base64::engine::general_purpose::STANDARD.encode(output)}),
+        )
+    }
+
+    pub(crate) fn fetch(
+        self,
+        max: u64,
+        seconds: u32,
+        valid: impl Fn() -> bool,
+    ) -> Result<Vec<u8>, &'static str> {
         if !valid() {
             return Err(ERROR);
         }
@@ -127,7 +140,7 @@ fn finish_response(
     response: ureq::Response,
     max: u64,
     valid: impl Fn() -> bool,
-) -> Result<Value, &'static str> {
+) -> Result<Vec<u8>, &'static str> {
     if !(200..300).contains(&response.status()) || !valid() {
         return Err(ERROR);
     }
@@ -140,10 +153,7 @@ fn finish_response(
     if output.len() as u64 > max || !valid() {
         return Err(ERROR);
     }
-    use base64::Engine;
-    Ok(
-        json!({"completed":true,"content_base64":base64::engine::general_purpose::STANDARD.encode(output)}),
-    )
+    Ok(output)
 }
 fn public(ip: IpAddr) -> bool {
     match ip {
@@ -597,8 +607,7 @@ mod tests {
     fn named_http_response_contract_refuses_redirects_and_oversize() {
         let permitted =
             finish_response(ureq::Response::new(200, "OK", "hello").unwrap(), 5, || true).unwrap();
-        assert_eq!(permitted["completed"], true);
-        assert_eq!(permitted["content_base64"], "aGVsbG8=");
+        assert_eq!(permitted, b"hello");
         for status in [301, 302, 303, 307, 308] {
             assert!(finish_response(
                 ureq::Response::new(status, "Redirect", "").unwrap(),

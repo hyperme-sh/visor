@@ -8,7 +8,7 @@ on:
 permissions:
   contents: read
 concurrency:
-  group: crash-sdk-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  group: crash-sdk-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}-${{ inputs.platforms }}
   cancel-in-progress: true
 jobs:
   sdk:
@@ -44,7 +44,11 @@ jobs:
       - name: SDK option unit contract without capture
         shell: bash
         run: |
-          cmake -S native/crash/contract -B "$RUNNER_TEMP/visor-crash-contract" -DCMAKE_PREFIX_PATH="$RUNNER_TEMP/visor-crash-sdk"
+          set --
+          if [[ "$RUNNER_OS" == Windows && "$RUNNER_ARCH" == ARM64 ]]; then
+            set -- -A ARM64
+          fi
+          cmake -S native/crash/contract -B "$RUNNER_TEMP/visor-crash-contract" "$@" -DCMAKE_PREFIX_PATH="$RUNNER_TEMP/visor-crash-sdk"
           cmake --build "$RUNNER_TEMP/visor-crash-contract" --config Release
           export PATH="$RUNNER_TEMP/visor-crash-sdk/bin:$PATH"
           if [[ "$RUNNER_OS" == Windows ]]; then

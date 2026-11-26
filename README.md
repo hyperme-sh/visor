@@ -32,16 +32,14 @@ at their tagged revision. Development bundles are built and checked in CI.
 | --- | --- | --- |
 | Linux desktop | x86_64, arm64 (aarch64) | glibc binary, Debian and RPM packages. See [release packages](#release-packages). |
 | Linux headless | x86_64, arm64 (aarch64) | Native glibc and musl CI builds, Alpine APK and static bundles, and a runtime image. Includes Conductor and omits desktop operations. See [headless builds](docs/headless.md). |
-| Windows desktop | x64 (x86_64) | Unsigned [development bundle and per-user installer](native/windows/README.md). |
-| Windows desktop | ARM64 | No native desktop packaging or CI build. |
-| macOS desktop | Apple Silicon (arm64) | [Development app and ZIP](native/macos/DISTRIBUTION.md) with a local ad-hoc signature. Developer ID signing and notarization are tracked in [#84](https://github.com/hyperme-sh/visor/issues/84). |
-| macOS desktop | Intel (x86_64) | No native desktop packaging or CI build. |
+| Windows desktop | x64 and ARM64 | Native unsigned [portable ZIP and per-user installer](native/windows/README.md) for each CPU. |
+| macOS desktop | Apple Silicon (arm64) and Intel (x86_64) | Native [app ZIP](native/macos/DISTRIBUTION.md) for each CPU on macOS 15 or later. The app is signed ad hoc. Developer ID signing and notarization are tracked in [#84](https://github.com/hyperme-sh/visor/issues/84). |
 
 ### Desktop features
 
-| Feature | Linux x86_64 and arm64 | Windows x64 | macOS arm64 |
+| Feature | Linux x86_64 and arm64 | Windows x64 and ARM64 | macOS Apple Silicon and Intel |
 | --- | --- | --- | --- |
-| Screen capture (`view`, `watch`) | X11 or Wayland Screenshot portal | Native capture after local Allow | Native capture with Screen Recording permission and local Allow |
+| Screen capture (`view`, `watch`) | X11 or Wayland Screenshot portal | Native capture after local Allow. The interactive Windows capture and input contract runs on x64 while [the hosted ARM64 desktop focus issue](https://github.com/actions/runner-images/issues/14069) remains open. | Native capture with Screen Recording permission and local Allow |
 | Mouse, keyboard and physical-input pause | X11. Native Wayland input is disabled pending [#17](https://github.com/hyperme-sh/visor/issues/17). | Native input and pause after local Allow. Elevated windows and secure desktops are refused. | Native input and pause after local Allow, with Accessibility and Input Monitoring permissions. |
 | Audio capture (`listen`) | PulseAudio-compatible desktop audio | Unavailable | Unavailable |
 | Companion UI | Floating and compact companion. On Wayland the window requires XWayland. | Tray icon and control window | Menu-bar icon and optional floating companion with Reduce Motion support |
@@ -111,26 +109,20 @@ Wayland starts sway with `WLR_BACKENDS=headless` and `WLR_RENDERER=pixman`. Sway
 
 ## Release packages
 
-Pull requests and `main` build Linux artifacts. Those builds are not a release. Their version is the `Cargo.toml` version plus `~ci.` and the commit. A release is a tag named `v` plus that same `Cargo.toml` version, pushed after the version is on `main`. The workflow refuses a tag that does not match.
+Pull requests and `main` build CI artifacts for both CPUs on Linux, Windows, and macOS. Linux CI packages append `~ci.` and the commit to the `Cargo.toml` version. A release is a tag named `v` plus that same `Cargo.toml` version, pushed after the version is on `main`. The workflow refuses a tag that does not match.
 
 Creating or changing a version tag or release requires the owner's explicit
 authorization for that version and action. Do not recreate the existing
 `v0.1.0` tag.
 
 
-The published [v0.1.0 release](https://github.com/hyperme-sh/hypermesh-visor/releases/tag/v0.1.0)
-contains the assets below. The source documentation describes current main;
-newer capabilities may not exist in that release. The asset names omit the version:
+Choose the download for your OS and CPU on [GitHub Releases](https://github.com/hyperme-sh/visor/releases).
 
-- `hypermesh-visor-x86_64`
-- `hypermesh-visor-x86_64.deb`
-- `hypermesh-visor-x86_64.rpm`
-- `hypermesh-visor-aarch64`
-- `hypermesh-visor-aarch64.deb`
-- `hypermesh-visor-aarch64.rpm`
-- `checksums.txt` — SHA-256 of those files
-
-The version is inside the package. The download page uses these same filenames.
+- Linux desktop packages use `hypermesh-visor-<x86_64|aarch64>.deb` or `.rpm`. The same name without an extension is the standalone Visor binary.
+- Linux headless downloads use `hypermesh-visor-headless-<x86_64|aarch64>`. See the [headless package guide](docs/headless.md).
+- Windows uses `hypermesh-visor-windows-<x64|arm64>-unsigned.zip` or the corresponding `hypermesh-visor-<version>-windows-<x64|arm64>-unsigned-setup.exe`.
+- macOS uses `hypermesh-visor-macos-<arm64|x86_64>.zip` with an ad-hoc-signed app for macOS 15 or later.
+- `checksums.txt` contains the SHA-256 hashes for release downloads.
 
 The packages install `/usr/bin/hypermesh-visor`, `/usr/bin/hypermesh`, `/usr/bin/hm`, `/usr/bin/hypermesh-companion`, and `/usr/bin/hypermesh-desktop-mcp` when present in the build. They do not start the visor. The companion is started for a graphical login from `/etc/xdg/autostart`. Run the visor as the logged-in user. Builds run on Ubuntu 24.04, the same userspace generation as the AGX JetPack 7 image.
 

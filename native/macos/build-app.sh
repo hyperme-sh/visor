@@ -6,8 +6,11 @@ if [[ -e "$output" ]]; then echo "Output already exists" >&2; exit 1; fi
 sdk=${HYPERMESH_CRASH_SDK_PATH:?Matching native crash SDK artifact is required}
 [[ -f "$sdk/lib/libvisor_crash_sdk.a" ]] || { echo 'Static native crash SDK is missing' >&2; exit 1; }
 [[ $(cat "$sdk/visor-source-revision") == "$(git rev-parse HEAD)" ]] || { echo 'Native crash SDK source mismatch' >&2; exit 1; }
-deployment=$(/usr/bin/sw_vers -productVersion)
-MACOSX_DEPLOYMENT_TARGET="$deployment" cargo rustc --locked --features native-crash-static --lib --crate-type staticlib
+export MACOSX_DEPLOYMENT_TARGET=${MACOSX_DEPLOYMENT_TARGET:-15.0}
+deployment=$MACOSX_DEPLOYMENT_TARGET
+version=$(sed -n 's/^version = "\([0-9][0-9.]*\)"$/\1/p' Cargo.toml)
+[[ $version =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo 'Cannot read the recorded package version' >&2; exit 1; }
+cargo rustc --locked --features native-crash-static --lib --crate-type staticlib
 mkdir -p "$output/Contents/MacOS" "$output/Contents/Resources/companion"
 for state in idle automation disconnected; do
   count=8
@@ -29,7 +32,7 @@ cat > "$output/Contents/Info.plist" <<PLIST
 <key>CFBundleExecutable</key><string>hypermesh-native-desktop</string>
 <key>CFBundlePackageType</key><string>APPL</string>
 <key>CFBundleVersion</key><string>1</string>
-<key>CFBundleShortVersionString</key><string>0.1.0-dev</string>
+<key>CFBundleShortVersionString</key><string>$version</string>
 <key>LSMinimumSystemVersion</key><string>$deployment</string>
 <key>NSHighResolutionCapable</key><true/>
 </dict></plist>

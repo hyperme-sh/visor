@@ -10,10 +10,8 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  native-crash-sdk:
-    uses: ./.github/workflows/crash-sdk.yml
-    with:
-      platforms: '["macos-latest", "windows-latest"]'
+  native-desktop:
+    uses: ./.github/workflows/native-desktop.yml
   linux:
     runs-on: ubuntu-latest
     steps:
@@ -83,88 +81,6 @@ jobs:
         env:
           HYPERMESH_HOST_ROOT_CONTRACT: "1"
         run: cargo test --locked -p hypermesh-crash-retention host::tests::root_enrollment_contract --lib -- --exact --ignored
-
-  native-windows-desktop-contract:
-    runs-on: windows-latest
-    steps:
-      - uses: actions/checkout@v7.0.1
-      - uses: actions/setup-dotnet@v5
-        with:
-          dotnet-version: '10.0.x'
-      - name: Native desktop fixture contracts
-        run: ./native/windows/test-desktop-contract.ps1
-
-  native-windows-engine:
-    needs: [native-windows-desktop-contract, native-crash-sdk]
-    runs-on: windows-latest
-    steps:
-      - uses: actions/checkout@v7.0.1
-      - uses: dtolnay/rust-toolchain@stable
-      - name: Build native engine DLL
-        run: cargo rustc --locked --lib --crate-type cdylib
-      - name: Native engine protocol contracts
-        run: cargo test --locked --manifest-path ci/native-engine/Cargo.toml
-      - uses: actions/setup-dotnet@v5
-        with:
-          dotnet-version: '10.0.x'
-      - uses: actions/setup-go@v6
-        with:
-          go-version: '1.25.x'
-      - name: Windows launcher process contracts
-        working-directory: native/windows/launcher
-        run: go test -mod=readonly -race ./...
-      - uses: actions/download-artifact@v4
-        with:
-          name: native-crash-sdk-windows-latest
-          path: ${{ runner.temp }}/visor-crash-sdk
-      - name: Build unsigned native Windows development bundle
-        env:
-          HYPERMESH_CRASH_SDK_PATH: ${{ runner.temp }}/visor-crash-sdk
-        run: ./native/windows/build-development.ps1
-      - name: Check out the published community pack fixture
-        uses: actions/checkout@v7.0.1
-        with:
-          repository: hyperme-sh/companion-packs
-          ref: 8940a44fb026224b563b0a732fbc69920f54dc4b
-          path: .ci-fixtures/companion-catalog
-          persist-credentials: false
-      - name: Catalog install, replacement, removal, recovery, and availability contracts
-        env:
-          HYPERMESH_CATALOG_FIXTURE: ${{ github.workspace }}/.ci-fixtures/companion-catalog
-          HYPERMESH_CATALOG_CONTRACT_OUTPUT: ${{ runner.temp }}/companion-catalog-responses.json
-        run: cargo test --locked --manifest-path ci/native-engine/Cargo.toml native_pack::published_contract::published_packs_native_contract -- --ignored --exact
-      - name: Native companion unit contracts (no desktop opened)
-        env:
-          HYPERMESH_CATALOG_CONTRACT_OUTPUT: ${{ runner.temp }}/companion-catalog-responses.json
-        run: |
-          $exe = Join-Path $pwd 'dist/windows-development/hypermesh-native-desktop.exe'
-          $stdout = Join-Path $env:RUNNER_TEMP 'visor-native-contract.stdout'
-          $stderr = Join-Path $env:RUNNER_TEMP 'visor-native-contract.stderr'
-          $process = Start-Process -FilePath $exe -ArgumentList '--self-test' -PassThru -Wait -RedirectStandardOutput $stdout -RedirectStandardError $stderr
-          Get-Content $stdout
-          Get-Content $stderr
-          if ($process.ExitCode -ne 0) { throw 'Native companion contracts failed' }
-          foreach ($file in @('hypermesh_visor.dll', 'conductor.exe', 'hypermesh.exe', 'hypermesh-visor.exe', 'hypermesh-desktop-mcp.exe', 'companion/idle_0_128.png', 'companion/automation_0_128.png', 'SHA256SUMS', 'UNSIGNED.txt')) {
-            if (!(Test-Path -LiteralPath (Join-Path 'dist/windows-development' $file))) { throw "Missing bundle file: $file" }
-          }
-      - name: Reject installer directory junction inputs
-        run: ./native/windows/test-installer-input.ps1
-      - name: Build unsigned per-user installer
-        run: ./native/windows/build-installer.ps1
-      - name: Installer replacement and uninstall contracts
-        run: ./native/windows/test-installer.ps1
-      - uses: actions/upload-artifact@v4
-        with:
-          name: windows-unsigned-installer-development
-          retention-days: 1
-          if-no-files-found: error
-          path: dist/windows-installer/
-      - uses: actions/upload-artifact@v4
-        with:
-          name: windows-native-companion-development
-          retention-days: 1
-          if-no-files-found: error
-          path: dist/windows-development/
 
   native-session:
     name: Session units (${{ matrix.os }})
@@ -505,53 +421,3 @@ jobs:
           cache: false
       - name: Native CLI isolated keychain contract
         run: python3 native/macos/test-keychain.py
-
-  native-macos-workspace:
-    name: Native macOS workspace
-    needs: native-crash-sdk
-    runs-on: macos-latest
-    steps:
-      - uses: actions/checkout@v7.0.1
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: actions/setup-go@v6
-        with:
-          go-version: '1.25.x'
-          cache: false
-      - uses: actions/download-artifact@v4
-        with:
-          name: native-crash-sdk-macos-latest
-          path: ${{ runner.temp }}/visor-crash-sdk
-      - name: Build native development distribution
-        env:
-          HYPERMESH_CRASH_SDK_PATH: ${{ runner.temp }}/visor-crash-sdk
-        run: bash native/macos/package-development.sh "$RUNNER_TEMP/visor-distribution"
-      - name: Check out the published community pack fixture
-        uses: actions/checkout@v7.0.1
-        with:
-          repository: hyperme-sh/companion-packs
-          ref: 8940a44fb026224b563b0a732fbc69920f54dc4b
-          path: .ci-fixtures/companion-catalog
-          persist-credentials: false
-      - name: Catalog install, replacement, removal, recovery, and availability contracts
-        env:
-          HYPERMESH_CATALOG_FIXTURE: ${{ github.workspace }}/.ci-fixtures/companion-catalog
-          HYPERMESH_CATALOG_CONTRACT_OUTPUT: ${{ runner.temp }}/companion-catalog-responses.json
-        run: cargo test --locked --manifest-path ci/native-engine/Cargo.toml native_pack::published_contract::published_packs_native_contract -- --ignored --exact
-      - name: Native event mapping and unauthenticated bridge refusal
-        env:
-          HYPERMESH_CATALOG_CONTRACT_OUTPUT: ${{ runner.temp }}/companion-catalog-responses.json
-        run: |
-          "$RUNNER_TEMP/visor-distribution/hypermesh-visor-macos-arm64/Hypermesh Visor Development.app/Contents/MacOS/hypermesh-native-desktop" --self-test
-          python3 native/macos/test-bridge-refusal.py "$RUNNER_TEMP/visor-distribution/hypermesh-visor-macos-arm64/Hypermesh Visor Development.app/Contents/MacOS/hypermesh-native-desktop"
-      - name: Native workspace unit contracts
-        env:
-          TMPDIR: /tmp
-        run: cargo test --locked --workspace
-      - uses: actions/upload-artifact@v4
-        with:
-          name: native-macos-${{ runner.arch }}
-          retention-days: 1
-          if-no-files-found: error
-          path: |
-            ${{ runner.temp }}/visor-distribution/hypermesh-visor-macos-arm64.zip
-            ${{ runner.temp }}/visor-distribution/hypermesh-visor-macos-arm64.zip.sha256

@@ -17,18 +17,26 @@ git -C "$work/source" checkout -q --detach FETCH_HEAD
 [[ $(git -C "$work/source" rev-parse HEAD) == "$revision" ]]
 git -C "$work/source" submodule update --init --recursive --depth=1
 python3 "$repo/native/crash/prepare-sdk.py" "$work/source"
+shared=ON
+# Positional arguments stay safe under nounset in the macOS system Bash.
+set --
+if [[ $(uname -s) == Darwin ]]; then
+  shared=OFF
+  export MACOSX_DEPLOYMENT_TARGET=${MACOSX_DEPLOYMENT_TARGET:-15.0}
+fi
 cargo build --locked --release --manifest-path "$repo/Cargo.toml" \
   -p hypermesh-crash-guard -p hypermesh-crash-retention --target-dir "$work/guard-build"
 guard="$work/guard-build/release/libhypermesh_crash_guard.a"
-shared=ON
-if [[ $(uname -s) == Darwin ]]; then shared=OFF; fi
 if [[ "${RUNNER_OS:-}" == Windows || "${OS:-}" == Windows_NT ]]; then
   guard=$(cygpath -m "$work/guard-build/release/hypermesh_crash_guard.lib")
+  if [[ "${RUNNER_ARCH:-${PROCESSOR_ARCHITEW6432:-${PROCESSOR_ARCHITECTURE:-}}}" == ARM64 ]]; then
+    set -- -A ARM64
+  fi
 fi
 
 # Crashpad has its own sender. Runtime must also use an empty native DSN and
 # permanently deny native SDK upload consent; only sanitized JSON uses GlitchTip.
-cmake -S "$work/source" -B "$work/build" \
+cmake -S "$work/source" -B "$work/build" "$@" \
   -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$output" \
   -DVISOR_CAPTURE_GUARD="$guard" \
   -DSENTRY_BUILD_SHARED_LIBS="$shared" -DSENTRY_BACKEND=crashpad \

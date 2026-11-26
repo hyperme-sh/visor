@@ -1,30 +1,31 @@
-# Apple Silicon development distribution
+# macOS desktop distribution
 
-This archive contains the native development app, the Hypermesh CLI and the
-inverse MCP adapter, and Conductor runtime. It is a CI development artifact, not a versioned release.
+This archive contains the native app, the Hypermesh CLI, the inverse MCP adapter,
+and the Conductor runtime. Choose `arm64` for Apple Silicon or `x86_64` for Intel.
+Both builds target macOS 15 or later.
 The app has a local ad-hoc signature only: no Developer ID identity or Apple
 notarization. macOS may refuse to open it under its security policy. Inspect the
 source and artifact before explicitly allowing a development app; do not disable
 system security settings. Signing remains deferred in issue #84.
 
-Only Apple Silicon is currently distributed. Intel is not claimed as supported
-until a native build and unit-contract lane exists. The app's Info.plist records
-the minimum macOS version used by the CI builder. The native app provides visible
+The app's Info.plist records its minimum macOS version. The native app provides visible
 Allow, Pause, Stop and Quit controls; it does not yet have the animated companion's
 full feature set. Multi-display capture and pointer coordinates share the active
 displays' logical rectangle; display changes pause access until Allow is selected
 again. The app shows access state in its window and menu bar; it does not hide or
 replace the global cursor in other apps. A click-through animated bug follows
-the pointer during allowed automation and disappears on pause. Remaining native
-companion controls and Windows support stay in #18. Audio and embedded stdio MCP workers remain unavailable.
+the pointer during allowed automation and disappears on pause. Use **Companion packs**
+in the menu bar to browse community packs, or select an installed appearance and voice
+independently. Audio capture and embedded stdio MCP workers remain unavailable.
 
 ## Verify and use
 
-Verify the ZIP against its sibling `.sha256` file, extract it into a new directory,
-and verify its contents before use:
+Verify the ZIP against `checksums.txt` from the release or the sibling `.sha256`
+file from CI. Extract the ZIP into a new directory and verify its contents before
+use. Substitute `x86_64` for `arm64` on an Intel Mac.
 
 ```sh
-shasum -a 256 -c hypermesh-visor-macos-arm64.zip.sha256
+awk '$2 == "hypermesh-visor-macos-arm64.zip"' checksums.txt | shasum -a 256 -c -
 unzip hypermesh-visor-macos-arm64.zip
 cd hypermesh-visor-macos-arm64
 shasum -a 256 -c checksums.sha256

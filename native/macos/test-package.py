@@ -3,6 +3,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import platform
 import plistlib
 import re
 import shutil
@@ -10,10 +11,15 @@ import struct
 import subprocess
 import sys
 import tempfile
+import tomllib
 import unittest
 
 APP = 'Hypermesh Visor Development.app/Contents'
-PROGRAMS = [f'{APP}/MacOS/hypermesh-native-desktop', f'{APP}/MacOS/crashpad_handler', 'libexec/hypermesh', 'libexec/hypermesh-desktop-mcp', 'libexec/hypermesh-acp', 'libexec/conductor', 'libexec/hypermesh-visor']
+PROGRAMS = [f'{APP}/MacOS/hypermesh-native-desktop', f'{APP}/MacOS/crashpad_handler',
+            f'{APP}/MacOS/hypermesh-crash-retention', 'libexec/hypermesh',
+            'libexec/hypermesh-desktop-mcp', 'libexec/hypermesh-acp',
+            'libexec/conductor', 'libexec/hypermesh-visor']
+MACH_O_CPU = {'arm64': 0x0100000c, 'x86_64': 0x01000007}
 
 
 def manifest(root):
@@ -35,14 +41,16 @@ def verify(root):
     info = plistlib.loads((root/APP/'Info.plist').read_bytes())
     assert info['CFBundleIdentifier'] == 'sh.hyperme.visor.development'
     assert info['CFBundleVersion'] == '1'
-    assert info['CFBundleShortVersionString'] == '0.1.0-dev'
+    with (Path(__file__).resolve().parents[2]/'Cargo.toml').open('rb') as stream:
+        assert info['CFBundleShortVersionString'] == tomllib.load(stream)['package']['version']
     assert info['LSMinimumSystemVersion']
+    arch = platform.machine()
     for relative in PROGRAMS:
         path = root/relative
         with path.open('rb') as stream:
             magic, cpu = struct.unpack('<II', stream.read(8))
-        if (magic, cpu) != (0xfeedfacf, 0x0100000c) or not os.access(path, os.X_OK):
-            raise ValueError('Expected an executable native ARM64 Mach-O program')
+        if (magic, cpu) != (0xfeedfacf, MACH_O_CPU[arch]) or not os.access(path, os.X_OK):
+            raise ValueError(f'Expected an executable native {arch} Mach-O program at {relative}')
     for name in ['hypermesh', 'hypermesh-desktop-mcp', 'hypermesh-acp', 'conductor', 'hypermesh-visor']:
         assert os.access(root/'bin'/name, os.X_OK)
     help_result = subprocess.run([str(root/'bin/conductor'), '--help'], check=True,

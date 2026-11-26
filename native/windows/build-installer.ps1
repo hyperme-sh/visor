@@ -34,11 +34,17 @@ $manifest = Get-Content -LiteralPath Cargo.toml -Raw
 $match = [regex]::Match($manifest, '(?ms)^\[package\]\s.*?^version\s*=\s*"(\d+\.\d+\.\d+)"')
 if (!$match.Success) { throw 'Cannot read the recorded package version' }
 $version = $match.Groups[1].Value
+$arch = [Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString().ToLowerInvariant()
+$allowedArchitecture = switch ($arch) {
+    'x64' { 'x64compatible' }
+    'arm64' { 'arm64' }
+    default { throw "Unsupported Windows architecture: $arch" }
+}
 $compiler = Join-Path ${env:ProgramFiles(x86)} 'Inno Setup 6/ISCC.exe'
 if (!(Test-Path -LiteralPath $compiler)) { throw 'Inno Setup 6 is required; no host package is installed by this script' }
-& $compiler "/DBundlePath=$bundlePath" "/DBundleVersion=$version" "/O$outputPath" native/windows/installer.iss
+& $compiler "/DBundlePath=$bundlePath" "/DBundleVersion=$version" "/DBundleArchitecture=$arch" "/DAllowedArchitecture=$allowedArchitecture" "/O$outputPath" native/windows/installer.iss
 if ($LASTEXITCODE -ne 0) { throw 'Unsigned installer build failed' }
-$installer = Join-Path $outputPath "hypermesh-visor-$version-windows-x64-unsigned-setup.exe"
+$installer = Join-Path $outputPath "hypermesh-visor-$version-windows-$arch-unsigned-setup.exe"
 if (!(Test-Path -LiteralPath $installer)) { throw 'Installer output missing' }
 '{0} *{1}' -f (Get-FileHash -LiteralPath $installer -Algorithm SHA256).Hash.ToLowerInvariant(), ([IO.Path]::GetFileName($installer)) |
     Set-Content -LiteralPath (Join-Path $outputPath 'SHA256SUMS') -Encoding ascii

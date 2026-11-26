@@ -1,0 +1,212 @@
+name: Native desktop
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  native-crash-sdk:
+    uses: ./.github/workflows/crash-sdk.yml
+    with:
+      platforms: '["macos-latest", "macos-15-intel", "windows-latest", "windows-11-arm"]'
+
+  native-windows-desktop-contract:
+    # Hosted Windows ARM64 first-sign-in windows can intercept the fixture (runner-images #14069).
+    name: Windows x64 capture and input contracts
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5
+        with:
+          dotnet-version: '10.0.x'
+      - name: Native desktop fixture contracts
+        run: ./native/windows/test-desktop-contract.ps1
+
+  native-windows-engine:
+    name: Native Windows desktop (${{ matrix.arch }})
+    needs: native-crash-sdk
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: windows-latest
+            arch: x64
+          - runner: windows-11-arm
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
+        with:
+          toolchain: stable
+      - name: Build native engine DLL
+        run: cargo rustc --locked --lib --crate-type cdylib
+      - name: Native engine protocol contracts
+        run: cargo test --locked --manifest-path ci/native-engine/Cargo.toml
+      - uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5
+        with:
+          dotnet-version: '10.0.x'
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version: '1.25.x'
+          architecture: ${{ matrix.arch }}
+      - name: Windows launcher process contracts
+        working-directory: native/windows/launcher
+        run: |
+          if ($env:RUNNER_ARCH -eq 'X64') {
+            go test -mod=readonly -race ./...
+          } else {
+            go test -mod=readonly ./...
+          }
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: native-crash-sdk-${{ matrix.runner }}
+          path: ${{ runner.temp }}/visor-crash-sdk
+      - name: Build unsigned native Windows development bundle
+        env:
+          HYPERMESH_CRASH_SDK_PATH: ${{ runner.temp }}/visor-crash-sdk
+        run: ./native/windows/build-development.ps1
+      - name: Verify native package architecture
+        env:
+          VISOR_WINDOWS_ARCH: ${{ matrix.arch }}
+        run: ./native/windows/test-bundle-architecture.ps1 $env:VISOR_WINDOWS_ARCH
+      - name: Check out the published community pack fixture
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: hyperme-sh/companion-packs
+          ref: 8940a44fb026224b563b0a732fbc69920f54dc4b
+          path: .ci-fixtures/companion-catalog
+          persist-credentials: false
+      - name: Catalog install, replacement, removal, recovery, and availability contracts
+        env:
+          HYPERMESH_CATALOG_FIXTURE: ${{ github.workspace }}/.ci-fixtures/companion-catalog
+          HYPERMESH_CATALOG_CONTRACT_OUTPUT: ${{ runner.temp }}/companion-catalog-responses.json
+        run: cargo test --locked --manifest-path ci/native-engine/Cargo.toml native_pack::published_contract::published_packs_native_contract -- --ignored --exact
+      - name: Native companion unit contracts (no desktop opened)
+        env:
+          HYPERMESH_CATALOG_CONTRACT_OUTPUT: ${{ runner.temp }}/companion-catalog-responses.json
+        run: |
+          $exe = Join-Path $pwd 'dist/windows-development/hypermesh-native-desktop.exe'
+          $stdout = Join-Path $env:RUNNER_TEMP 'visor-native-contract.stdout'
+          $stderr = Join-Path $env:RUNNER_TEMP 'visor-native-contract.stderr'
+          $process = Start-Process -FilePath $exe -ArgumentList '--self-test' -PassThru -Wait -RedirectStandardOutput $stdout -RedirectStandardError $stderr
+          Get-Content $stdout
+          Get-Content $stderr
+          if ($process.ExitCode -ne 0) { throw 'Native companion contracts failed' }
+          foreach ($file in @('hypermesh_visor.dll', 'conductor.exe', 'hypermesh.exe', 'hypermesh-visor.exe', 'hypermesh-desktop-mcp.exe', 'companion/idle_0_128.png', 'companion/automation_0_128.png', 'SHA256SUMS', 'UNSIGNED.txt')) {
+            if (!(Test-Path -LiteralPath (Join-Path 'dist/windows-development' $file))) { throw "Missing bundle file: $file" }
+          }
+      - name: Reject installer directory junction inputs
+        run: ./native/windows/test-installer-input.ps1
+      - name: Build unsigned per-user installer
+        run: ./native/windows/build-installer.ps1
+      - name: Installer replacement and uninstall contracts
+        run: ./native/windows/test-installer.ps1
+      - name: Stage tested Windows downloads
+        env:
+          VISOR_WINDOWS_ARCH: ${{ matrix.arch }}
+        run: |
+          $bundle = (Resolve-Path 'dist/windows-development').Path
+          $downloads = Join-Path $PWD 'desktop-downloads'
+          New-Item -ItemType Directory -Path $downloads | Out-Null
+          $archive = "hypermesh-visor-windows-${env:VISOR_WINDOWS_ARCH}-unsigned.zip"
+          [IO.Compression.ZipFile]::CreateFromDirectory($bundle, (Join-Path $downloads $archive))
+          Copy-Item 'dist/windows-installer/*.exe' -Destination $downloads
+          $manifest = @(Get-Content 'dist/windows-installer/SHA256SUMS')
+          $hash = (Get-FileHash (Join-Path $downloads $archive) -Algorithm SHA256).Hash.ToLowerInvariant()
+          $manifest += "$hash *$archive"
+          $manifest | Set-Content (Join-Path $downloads 'SHA256SUMS') -Encoding ascii
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: visor-desktop-release-windows-${{ matrix.arch }}
+          retention-days: 2
+          compression-level: 0
+          if-no-files-found: error
+          path: desktop-downloads/
+
+  native-macos-workspace:
+    name: Native macOS workspace (${{ matrix.arch }})
+    needs: native-crash-sdk
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-latest
+            arch: arm64
+          - runner: macos-15-intel
+            arch: x86_64
+    runs-on: ${{ matrix.runner }}
+    env:
+      VISOR_MACOS_ARCH: ${{ matrix.arch }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
+        with:
+          toolchain: stable
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version: '1.25.x'
+          cache: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: native-crash-sdk-${{ matrix.runner }}
+          path: ${{ runner.temp }}/visor-crash-sdk
+      - name: Build native development distribution
+        env:
+          HYPERMESH_CRASH_SDK_PATH: ${{ runner.temp }}/visor-crash-sdk
+        run: |
+          test "$(uname -m)" = "$VISOR_MACOS_ARCH"
+          bash native/macos/package-development.sh "$RUNNER_TEMP/visor-distribution"
+      - name: Check out the published community pack fixture
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: hyperme-sh/companion-packs
+          ref: 8940a44fb026224b563b0a732fbc69920f54dc4b
+          path: .ci-fixtures/companion-catalog
+          persist-credentials: false
+      - name: Catalog install, replacement, removal, recovery, and availability contracts
+        env:
+          HYPERMESH_CATALOG_FIXTURE: ${{ github.workspace }}/.ci-fixtures/companion-catalog
+          HYPERMESH_CATALOG_CONTRACT_OUTPUT: ${{ runner.temp }}/companion-catalog-responses.json
+        run: cargo test --locked --manifest-path ci/native-engine/Cargo.toml native_pack::published_contract::published_packs_native_contract -- --ignored --exact
+      - name: Native event mapping and unauthenticated bridge refusal
+        env:
+          HYPERMESH_CATALOG_CONTRACT_OUTPUT: ${{ runner.temp }}/companion-catalog-responses.json
+        run: |
+          "$RUNNER_TEMP/visor-distribution/hypermesh-visor-macos-${VISOR_MACOS_ARCH}/Hypermesh Visor Development.app/Contents/MacOS/hypermesh-native-desktop" --self-test
+          python3 native/macos/test-bridge-refusal.py "$RUNNER_TEMP/visor-distribution/hypermesh-visor-macos-${VISOR_MACOS_ARCH}/Hypermesh Visor Development.app/Contents/MacOS/hypermesh-native-desktop"
+      - name: Native workspace unit contracts
+        env:
+          TMPDIR: /tmp
+        run: cargo test --locked --workspace
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: visor-desktop-release-macos-${{ matrix.arch }}
+          retention-days: 2
+          compression-level: 0
+          if-no-files-found: error
+          path: |
+            ${{ runner.temp }}/visor-distribution/hypermesh-visor-macos-${{ matrix.arch }}.zip
+            ${{ runner.temp }}/visor-distribution/hypermesh-visor-macos-${{ matrix.arch }}.zip.sha256
+
+  native-desktop-downloads:
+    name: Verify native desktop downloads
+    needs: [native-windows-desktop-contract, native-windows-engine, native-macos-workspace]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: visor-desktop-release-*
+          path: candidates
+      - name: Verify architecture-specific assets and source revisions
+        run: python3 ci/assemble-desktop-assets.py desktop candidates "$GITHUB_SHA"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: startsWith(github.ref, 'refs/tags/v')
+        with:
+          name: visor-desktop-downloads
+          path: desktop/
+          compression-level: 0
+          if-no-files-found: error

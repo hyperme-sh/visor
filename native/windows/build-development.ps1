@@ -2,14 +2,17 @@ param([string]$Output = "dist/windows-development")
 $ErrorActionPreference = "Stop"
 $repo = (Resolve-Path (Join-Path $PSScriptRoot "../..")).Path
 Set-Location $repo
-if ([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture -ne 'X64') { throw 'Windows development bundle currently requires x64' }
+$arch = [Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString().ToLowerInvariant()
+if ($arch -notin @('x64', 'arm64')) { throw "Unsupported Windows architecture: $arch" }
 $out = [System.IO.Path]::GetFullPath($Output)
 if (Test-Path -LiteralPath $out) { throw 'Output already exists' }
 & cargo rustc --locked --lib --crate-type cdylib
 if ($LASTEXITCODE -ne 0) { throw 'Native engine build failed' }
 & cargo build --locked -p hypermesh-visor-client --bins
 if ($LASTEXITCODE -ne 0) { throw 'Inverse MCP build failed' }
-& dotnet publish native/windows/app/HypermeshVisor.csproj -c Release -r win-x64 --self-contained true -p:RestoreLockedMode=true -o $out
+$version = [regex]::Match((Get-Content Cargo.toml -Raw), '(?m)^version = "(\d+\.\d+\.\d+)"').Groups[1].Value
+if (!$version) { throw 'Cannot read the recorded package version' }
+& dotnet publish native/windows/app/HypermeshVisor.csproj -c Release -r "win-$arch" --self-contained true -p:RestoreLockedMode=true "-p:Version=$version" -o $out
 if ($LASTEXITCODE -ne 0) { throw 'Native companion build failed' }
 Copy-Item -LiteralPath target/debug/hypermesh_visor.dll -Destination $out
 Copy-Item -LiteralPath target/debug/hypermesh-acp.exe -Destination $out

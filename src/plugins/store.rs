@@ -19,7 +19,7 @@ const SUFFIX: &str = ".package";
 pub(crate) struct Store {
     dir: PathBuf,
     // A single running Visor owns this store, including across different socket paths.
-    _lock: File,
+    lock: File,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -39,7 +39,7 @@ impl Store {
         let lock =
             storage::open(&dir.join("lock"), storage::Open::Lock).map_err(|_| Error::Storage)?;
         storage::lock(&lock).map_err(|_| Error::Storage)?;
-        Ok(Self { dir, _lock: lock })
+        Ok(Self { dir, lock })
     }
 
     fn path(&self, id: &str) -> Result<PathBuf, Error> {
@@ -207,6 +207,13 @@ impl Store {
     }
 }
 
+impl Drop for Store {
+    fn drop(&mut self) {
+        // A concurrent fork can hold the same open file description until exec.
+        drop(storage::UnlockOnDrop(&self.lock));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -248,9 +255,11 @@ mod tests {
             )
             .unwrap();
         let disabled = store.set_enabled(id, entry.revision, false, || {}).unwrap();
+        let inherited = store.lock.try_clone().unwrap();
         drop(store);
 
         let reopened = Store::open(&dir).unwrap();
+        drop(inherited);
         let current = reopened.get(id).unwrap().unwrap();
         assert_eq!(current.revision, disabled.revision);
         assert!(!current.enabled);

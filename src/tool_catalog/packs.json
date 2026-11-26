@@ -1,0 +1,40 @@
+{
+  "schema_version": 1,
+  "profiles": [
+    {
+      "id": "coding-v1",
+      "availability": "operator_image_build",
+      "image_target": "cloud-coding",
+      "distribution": "debian:trixie",
+      "architectures": ["amd64", "arm64"],
+      "installation": "replace_worker_image",
+      "redistribution": "separate_install",
+      "tools": [
+        {"id": "bash", "role": "terminal shell", "source": "https://packages.debian.org/trixie/bash", "license": "GPL-3.0-or-later", "route": "stock_base"},
+        {"id": "git", "role": "version control", "source": "https://packages.debian.org/trixie/git", "license": "GPL-2.0-only", "route": "debian_snapshot"},
+        {"id": "shellcheck", "role": "shell lint", "source": "https://packages.debian.org/trixie/shellcheck", "license": "GPL-3.0-or-later", "route": "debian_snapshot"}
+      ]
+    },
+    {
+      "id": "local-ai-v1",
+      "availability": "catalog_install_plan",
+      "architectures": ["amd64", "arm64"],
+      "installation": "per_tool",
+      "redistribution": "separate_install",
+      "tools": [
+        {"id": "llama2-c", "route": "visor_catalog", "runtime": "CPU, Bubblewrap", "build": "system C compiler and static libc", "data": "operator-supplied model and tokenizer; size and memory depend on model"}
+      ]
+    },
+    {
+      "id": "business-v1",
+      "availability": "catalog_listed",
+      "architectures": ["amd64", "arm64"],
+      "installation": "per_tool",
+      "redistribution": "separate_install",
+      "tools": [
+        {"id": "gitea", "route": "visor_catalog", "runtime": "separate service with persistent repository and database storage"},
+        {"id": "vikunja", "route": "visor_catalog", "runtime": "separate service with persistent database and attachment storage"}
+      ]
+    }
+  ]
+}

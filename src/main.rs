@@ -1,3 +1,5 @@
+#[cfg(all(target_os = "linux", feature = "headless"))]
+mod worker_status;
 #[cfg(target_os = "linux")]
 mod github_issue_cli;
 #[cfg(target_os = "linux")]
@@ -37,6 +39,15 @@ fn main() -> ExitCode {
     if args.peek().is_some_and(|arg| arg == "github-issue") {
         args.next();
         return github_issue_cli::run(args, io::stdout().lock());
+    }
+    #[cfg(all(target_os = "linux", feature = "headless"))]
+    if args.peek().is_some_and(|arg| arg == "worker-status") {
+        args.next();
+        if args.next().is_some() {
+            eprintln!("Usage: hypermesh-visor worker-status");
+            return ExitCode::from(2);
+        }
+        return worker_status::run();
     }
     if args.peek().is_some_and(|arg| arg == "catalog") {
         args.next();

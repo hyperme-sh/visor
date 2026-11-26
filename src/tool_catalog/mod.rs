@@ -5,8 +5,9 @@ use std::io::Write;
 #[cfg(target_os = "linux")]
 mod linux;
 
+const PACKS: &str = include_str!("packs.json");
 const CATALOG: &str = include_str!("catalog.json");
-const USAGE: &str = "Usage: hypermesh-visor catalog list | show ID | plan ID | install ID MACHINE PLAN_SHA256 | health ID | remove ID MACHINE INSTALLATION";
+const USAGE: &str = "Usage: hypermesh-visor catalog list | show ID | packs [PROFILE] | plan ID | install ID MACHINE PLAN_SHA256 | health ID | remove ID MACHINE INSTALLATION";
 
 pub fn run(args: impl IntoIterator<Item = String>, mut output: impl Write) -> Result<(), String> {
     let args: Vec<_> = args.into_iter().collect();
@@ -25,6 +26,8 @@ pub fn run(args: impl IntoIterator<Item = String>, mut output: impl Write) -> Re
     };
     let value = match args.as_slice() {
         [command] if command == "list" => catalog,
+        [command] if command == "packs" => pack_catalog(&catalog, None)?,
+        [command, profile] if command == "packs" => pack_catalog(&catalog, Some(profile))?,
         [command, id] if command == "show" => entry(id)?.clone(),
         [command, id, rest @ ..]
             if matches!(command.as_str(), "plan" | "install" | "health" | "remove") =>
@@ -45,6 +48,32 @@ pub fn run(args: impl IntoIterator<Item = String>, mut output: impl Write) -> Re
     writeln!(output).map_err(|_| "Could not finish catalog response".into())
 }
 
+fn pack_catalog(catalog: &Value, profile: Option<&String>) -> Result<Value, &'static str> {
+    let mut packs: Value = serde_json::from_str(PACKS).map_err(|_| "Invalid bundled tool packs")?;
+    let profiles = packs["profiles"]
+        .as_array_mut()
+        .ok_or("Invalid bundled tool packs")?;
+    for entry in profiles.iter_mut() {
+        for tool in entry["tools"].as_array_mut().ok_or("Invalid tool pack")? {
+            if tool["route"] == "visor_catalog" {
+                let listed = catalog["tools"]
+                    .as_array()
+                    .and_then(|items| items.iter().find(|item| item["id"] == tool["id"]))
+                    .ok_or("Tool pack refers to an unknown catalog entry")?;
+                tool["catalog"] = listed.clone();
+            }
+        }
+    }
+    match profile {
+        Some(id) => profiles
+            .iter()
+            .find(|entry| entry["id"] == *id)
+            .cloned()
+            .ok_or("Unknown tool pack"),
+        None => Ok(packs),
+    }
+}
+
 #[cfg(target_os = "linux")]
 fn manage(command: &str, id: &str, arguments: &[String]) -> Result<Value, String> {
     linux::manage(command, id, arguments, &crate::mcp::config_dir()).map_err(str::to_owned)
@@ -59,6 +88,19 @@ fn manage(_: &str, _: &str, _: &[String]) -> Result<Value, String> {
 mod tests {
     use super::*;
     use std::collections::HashSet;
+
+    #[test]
+    fn optional_packs_resolve_existing_catalog_metadata() {
+        let mut buffer = Vec::new();
+        run(["packs".into()], &mut buffer).unwrap();
+        let packs: Value = serde_json::from_slice(&buffer).unwrap();
+        let profiles = packs["profiles"].as_array().unwrap();
+        assert_eq!(profiles.len(), 3);
+        assert_eq!(profiles[0]["image_target"], "cloud-coding");
+        assert_eq!(profiles[1]["tools"][0]["catalog"]["id"], "llama2-c");
+        assert_eq!(profiles[2]["tools"][1]["catalog"]["id"], "vikunja");
+        assert!(run(["packs".into(), "unknown".into()], &mut Vec::new()).is_err());
+    }
 
     #[test]
     fn catalog_has_all_alternatives_and_only_one_managed_install_route() {

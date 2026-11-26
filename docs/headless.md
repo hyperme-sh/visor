@@ -57,6 +57,9 @@ desktop stack or D-Bus service. Its local sockets are under `/run/visor`; privat
 state is under `/var/lib/visor`. Deployment configuration owns any state mounts
 and grants; the image does not expose a TCP port or mount host resources.
 
+The [stock Debian cloud worker](cloud-workers.md) uses the same native headless
+package and offers a separately built coding profile.
+
 For a future owner-authorized version tag, the release workflow also builds the
 native headless bundles on both architectures, verifies their source revisions
 and checksums, and includes them beside the desktop assets. Architecture-specific

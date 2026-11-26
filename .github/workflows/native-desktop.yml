@@ -13,12 +13,9 @@ jobs:
       platforms: '["macos-latest", "macos-15-intel", "windows-latest", "windows-11-arm"]'
 
   native-windows-desktop-contract:
-    name: Windows capture and input contracts (${{ matrix.runner }})
-    strategy:
-      fail-fast: false
-      matrix:
-        runner: [windows-latest, windows-11-arm]
-    runs-on: ${{ matrix.runner }}
+    # Hosted Windows ARM64 first-sign-in windows can intercept the fixture (runner-images #14069).
+    name: Windows x64 capture and input contracts
+    runs-on: windows-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5

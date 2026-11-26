@@ -224,6 +224,8 @@ jobs:
             Desktop downloads are available for Linux x86_64 and arm64, Windows x64 and ARM64, and macOS Apple Silicon and Intel. Linux headless downloads are included.
 
             Windows installers and portable ZIPs are unsigned. macOS ZIPs contain ad-hoc-signed apps for macOS 15 or later. Use `checksums.txt` to verify downloads.
+
+            Both Windows architectures run the companion-pack and installer contracts. The interactive capture and input contract runs on Windows x64 while the [hosted ARM64 desktop focus issue](https://github.com/actions/runner-images/issues/14069) remains open.
           files: |
             dist/hypermesh-visor-x86_64
             dist/hypermesh-visor-x86_64.deb

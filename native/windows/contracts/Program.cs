@@ -31,14 +31,7 @@ internal static class DesktopContracts
         Application.SetHighDpiMode(HighDpiMode.PerMonitorV2);
         Application.EnableVisualStyles();
         Application.SetCompatibleTextRenderingDefault(false);
-        using Form fixture = new()
-        {
-            Text = "Visor CI desktop fixture",
-            StartPosition = FormStartPosition.CenterScreen,
-            WindowState = FormWindowState.Maximized,
-            TopMost = true,
-            BackColor = Color.FromArgb(37, 165, 104)
-        };
+        using Form fixture = new() { Text = "Visor CI desktop fixture", Width = 420, Height = 280, StartPosition = FormStartPosition.Manual, Location = new Point(60, 60), TopMost = true, BackColor = Color.FromArgb(37, 165, 104) };
         TextBox entry = new() { Location = new Point(20, 20), Width = 340 };
         fixture.Controls.Add(entry);
         fixture.Shown += async (_, _) =>
@@ -67,11 +60,13 @@ internal static class DesktopContracts
             Require(monitor.Healthy && driver.ApproveLayout(), "Desktop monitor/layout unavailable");
             authority.Grant(authority.Generation, Session);
             Console.WriteLine("STEP capture");
+            JsonElement capture = Request(driver.Perform(Request(new { action = "view", session = Session })));
+            using MemoryStream bytes = new(Convert.FromBase64String(capture.GetProperty("png").GetString()!));
+            using Bitmap image = new(bytes);
             Rectangle bounds = SystemInformation.VirtualScreen;
-            Point sample = fixture.PointToScreen(new Point(fixture.ClientSize.Width / 2, fixture.ClientSize.Height / 2));
-            Win32.Point screenPoint = new() { X = sample.X, Y = sample.Y };
-            await Until(() => Win32.WindowFromPoint(screenPoint) == fixture.Handle, "Fixture did not own the capture sample point");
-            await CheckCapture(driver, fixture, bounds, sample);
+            Point sample = fixture.PointToScreen(new Point(150, 120));
+            Require(image.Size == bounds.Size, "Capture dimensions differ from the virtual desktop");
+            Require(image.GetPixel(sample.X - bounds.X, sample.Y - bounds.Y).ToArgb() == fixture.BackColor.ToArgb(), "Capture did not contain the fixture window");
             bool refused = false;
             Console.WriteLine("STEP cross-session refusal");
             try { driver.Perform(Request(new { action = "view", session = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa" })); }
@@ -114,24 +109,5 @@ internal static class DesktopContracts
             // Restore only this fixture's pointer movement; no desktop image is saved.
             SetCursorPos(original.X, original.Y);
         }
-    }
-
-    private static async Task CheckCapture(DesktopDriver driver, Form fixture, Rectangle bounds, Point sample)
-    {
-        JsonElement request = Request(new { action = "view", session = Session });
-        fixture.Refresh();
-        int expected = fixture.BackColor.ToArgb();
-        int actual = 0;
-        for (int attempt = 0; attempt < 5; attempt++)
-        {
-            await Task.Delay(150);
-            JsonElement capture = Request(driver.Perform(request));
-            using MemoryStream bytes = new(Convert.FromBase64String(capture.GetProperty("png").GetString()!));
-            using Bitmap image = new(bytes);
-            Require(image.Size == bounds.Size, "Capture dimensions differ from the virtual desktop");
-            actual = image.GetPixel(sample.X - bounds.X, sample.Y - bounds.Y).ToArgb();
-            if (actual == expected) return;
-        }
-        throw new InvalidOperationException($"Capture did not contain the fixture window (expected {expected:X8}, observed {actual:X8})");
     }
 }

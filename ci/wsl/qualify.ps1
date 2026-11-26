@@ -18,8 +18,7 @@ $owner = $null
 $imported = $false
 
 function Invoke-WSL {
-    param([Parameter(ValueFromRemainingArguments = $true)][string[]]$Arguments)
-    & wsl.exe --distribution $distro --exec @Arguments
+    & wsl.exe --distribution $distro --exec @args
     if ($LASTEXITCODE -ne 0) { throw "WSL fixture command failed ($LASTEXITCODE)" }
 }
 

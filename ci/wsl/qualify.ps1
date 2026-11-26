@@ -61,6 +61,7 @@ try {
     New-Item -ItemType Directory -Path (Join-Path $userData 'User'), $extensions | Out-Null
     @{
         'workbench.startupEditor' = 'none'
+        'editor.accessibilitySupport' = 'on'
         'security.workspace.trust.startupPrompt' = 'always'
         'extensions.autoUpdate' = $false
         'update.mode' = 'none'

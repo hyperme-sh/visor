@@ -1,6 +1,5 @@
 // Drive the Windows workbench while its workspace extension host runs in WSL.
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
 import { setTimeout as wait } from 'node:timers/promises';
 
 const [port, distro, workspace, cliTask, marker] = process.argv.slice(2);
@@ -104,25 +103,20 @@ async function palette(label) {
   await pick(label);
 }
 
-async function terminalText() {
-  await palette('Terminal: Select All');
-  await palette('Terminal: Copy Selection');
-  return execFileSync('pwsh', ['-NoProfile', '-Command', 'Get-Clipboard -Raw'], {
-    encoding: 'utf8', timeout: 5000,
-  });
-}
+const terminalBuffers = `[...document.querySelectorAll('.xterm')]
+  .filter(terminal => terminal.getBoundingClientRect().width && terminal.getBoundingClientRect().height)
+  .map(terminal => [...terminal.querySelectorAll('.xterm-accessibility-tree > *')]
+    .map(row => row.textContent).join('\\n'))`;
 
-async function waitForTask(expected) {
-  let text;
-  for (let copy = 0; copy < 4; copy += 1) {
-    text = await terminalText();
-    if (text.includes(marker) && text.includes('completed · access ready · exit 0')) {
+function waitForTask(expected, previous) {
+  return until('the completed scoped task in the VS Code terminal', async () => {
+    for (const text of await evaluate(terminalBuffers)) {
+      if (!text.includes(marker) || !text.includes('completed · access ready · exit 0')) continue;
       const id = text.match(/Visor task ([a-f0-9-]{36})/)?.[1];
-      if (id && (!expected || id === expected)) return id;
+      if (id && id !== previous && (!expected || id === expected)) return id;
     }
-    await wait(500);
-  }
-  throw new Error(`Expected scoped output in the VS Code terminal, got ${JSON.stringify(text?.slice(-1000))}`);
+    return false;
+  });
 }
 
 try {
@@ -139,7 +133,9 @@ try {
   };
   await begin();
   await pick('Attach to task');
-  await until('the task ID input', () => evaluate(quickInputFocused));
+  await until('the task ID input', () => evaluate(
+    `${quickInputFocused} && document.activeElement.closest('.quick-input-widget').innerText.includes('Task ID and optional output cursor')`,
+  ));
   await send('Input.insertText', { text: cliTask });
   await key('Enter', 'Enter', 13);
   await waitForTask(cliTask);
@@ -149,7 +145,7 @@ try {
   await pick('Run declared task');
   await until('the task review prompt', () =>
     click('.monaco-dialog-box .monaco-button, .monaco-dialog-box button', 'Run Task'));
-  const editorTask = await waitForTask();
+  const editorTask = await waitForTask(undefined, cliTask);
   assert.notEqual(editorTask, cliTask);
   console.log(`VS Code ran task ${editorTask} in ${distro} at ${workspace}`);
   console.log(`VISOR_EDITOR_TASK=${editorTask}`);
@@ -157,6 +153,7 @@ try {
   if (socket?.readyState === WebSocket.OPEN) {
     console.error(await evaluate(`JSON.stringify({
       title: document.title,
+      terminalBuffers: (${terminalBuffers}).map(buffer => buffer.slice(-400)),
       visible: [...document.querySelectorAll('.quick-input-widget, .monaco-dialog-box, .notifications-toasts')]
         .filter(element => element.getBoundingClientRect().width)
         .map(element => element.innerText.slice(0, 600)),

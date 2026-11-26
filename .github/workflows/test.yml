@@ -42,6 +42,34 @@ jobs:
           cargo build --locked -p hypermesh-companion
           python3 companion/tests/session_cli_terminal.py
 
+  linux-companion-catalog:
+    name: Linux companion catalog (${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
+        with:
+          toolchain: stable
+      - name: Check out the published community pack fixture
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: hyperme-sh/companion-packs
+          ref: 8940a44fb026224b563b0a732fbc69920f54dc4b
+          path: .ci-fixtures/companion-catalog
+          persist-credentials: false
+      - name: Linux catalog browse, preview, install, and offline pairing contract
+        env:
+          HYPERMESH_CATALOG_FIXTURE: ${{ github.workspace }}/.ci-fixtures/companion-catalog
+        run: cargo test --locked -p hypermesh-companion --bin hypermesh-companion pack_picker::published_contract::published_packs_linux_contract -- --ignored --exact
+
   host-crash-authority-contract:
     runs-on: ${{ github.event.repository.private && fromJSON('["self-hosted","linux","x64","debrunner"]') || 'ubuntu-24.04' }}
     container: ubuntu:24.04

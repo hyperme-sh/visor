@@ -251,10 +251,13 @@ fn get(path: &str, limit: usize) -> Result<Vec<u8>, String> {
     if response.status() != 200 {
         return Err("The community catalog or pack could not be downloaded.".into());
     }
+    read_download(response.into_reader(), limit)
+}
+
+/// Reads the bounded response body before any catalog or pack validation.
+pub fn read_download(body: impl Read, limit: usize) -> Result<Vec<u8>, String> {
     let mut bytes = Vec::new();
-    response
-        .into_reader()
-        .take(limit as u64 + 1)
+    body.take((limit as u64).saturating_add(1))
         .read_to_end(&mut bytes)
         .map_err(|_| "The community download was interrupted.")?;
     if bytes.len() > limit {

@@ -223,6 +223,17 @@ internal sealed class CompanionPacks : IDisposable
         using var player = new SoundPlayer(wave);
         player.Load();
 
+        var restored = fixture.GetProperty("recovered_voice");
+        packs.Apply("voice", restored);
+        packs.Resolve(cues, Environment.TickCount64);
+        if (Text(restored, "id") != "clover-rabbit" || packs.clip != clip || packs.selectedAudio != recording
+            || packs.voice?.Audio(recording) is not { } restoredBytes || restoredBytes.SequenceEqual(bytes)
+            || !restoredBytes.SequenceEqual(audio.GetProperty("audio").GetProperty("sleeping.wav").GetBytesFromBase64()))
+            throw new InvalidOperationException("Offline recovery must keep the last working Clover Rabbit cue with Beetle art");
+        using var restoredWave = new MemoryStream(restoredBytes, writable: false);
+        using var restoredPlayer = new SoundPlayer(restoredWave);
+        restoredPlayer.Load();
+
         var appearanceRemoval = fixture.GetProperty("after_appearance_removal");
         packs.Apply("appearance", appearanceRemoval.GetProperty("appearance"));
         packs.Apply("voice", appearanceRemoval.GetProperty("voice"));

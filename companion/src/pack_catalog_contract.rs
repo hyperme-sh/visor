@@ -4,7 +4,7 @@ use std::cell::Cell;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use hypermesh_visor::companion_catalog::{CatalogSource, Preview};
+use hypermesh_visor::companion_catalog::{read_download, CatalogSource, Preview};
 use hypermesh_visor::companion_packs::{decode_wave, read_png, PcmWave, SPRITE_SIZE};
 
 use super::{apply_removed_pack, load_appearance, load_saved, pick, settings, Selection, Voice};
@@ -12,6 +12,7 @@ use crate::{auth::Pose, mascot::Mascot, pack_catalog_dialog::browse_from, presen
 
 #[path = "../../ci/fixtures/published_companion_catalog.rs"]
 mod fixture;
+use fixture::DownloadFault;
 
 const PACKS: [(&str, &str, bool); 4] = [
     ("ember-cat", "Ember Cat", true),
@@ -142,13 +143,14 @@ fn published_packs_linux_contract() {
     hypermesh_local_storage::create_dir(&config.0).unwrap();
     let corrupt = Cell::new(Some("ember-cat"));
     let offline = Cell::new(false);
+    let fault = Cell::new(None);
     let archive_reads = Cell::new(0);
     let read = |path: &str, limit| {
         assert!(!offline.get(), "offline companion tried to fetch {path}");
         if path.ends_with(".pack.json") {
             archive_reads.set(archive_reads.get() + 1);
         }
-        let data = fixture::read_fixture(Path::new(&root), path, limit)?;
+        let data = fixture::read_with_fault(Path::new(&root), path, limit, fault.get())?;
         if path != "catalog/catalog.json" {
             return Ok(data);
         }
@@ -174,6 +176,15 @@ fn published_packs_linux_contract() {
     assert!(rejected.contains("SHA-256"), "{rejected}");
     assert!(!config.0.join("companion-packs/ember-cat").exists());
     corrupt.set(None);
+    for case in DownloadFault::CASES {
+        fault.set(Some(("ember-cat.pack.json", case)));
+        let rejected = browse_pack(&config.0, &source, "Ember Cat", None)
+            .err()
+            .unwrap();
+        assert!(rejected.contains(case.expected_error()), "{rejected}");
+        assert!(!config.0.join("companion-packs/ember-cat").exists());
+    }
+    fault.set(None);
     let mut rabbit_preview = None;
     for (id, name, has_voice) in PACKS {
         let preview = browse_pack(&config.0, &source, name, Some(has_voice)).unwrap();
@@ -227,6 +238,52 @@ fn published_packs_linux_contract() {
     assert!(rejected.contains("SHA-256"), "{rejected}");
     assert_eq!(fs::read(&working).unwrap(), edited);
     corrupt.set(None);
+
+    let signals = presentation::signals(Mascot::Automation, false, &Pose::Idle, None, None);
+    let edited_wave = decode_wave(&edited).unwrap();
+    let assert_last_working_pair = || {
+        let saved = settings::presentation(&config.0);
+        assert_eq!(saved.appearance.as_deref(), Some("visor-beetle"));
+        assert_eq!(saved.voice.as_deref(), Some("clover-rabbit"));
+        let (appearance, voice) = load_saved(
+            &config.0,
+            saved.appearance.as_deref(),
+            saved.voice.as_deref(),
+        );
+        assert_eq!(appearance.unwrap().manifest.name, "Visor Beetle");
+        let voice = Voice::load(&voice.unwrap());
+        let cue = voice
+            .cue_for(&signals)
+            .expect("last working Clover Rabbit cue");
+        assert_eq!(cue.rate, edited_wave.rate);
+        assert_eq!(cue.pcm, edited_wave.pcm);
+        assert_eq!(fs::read(&working).unwrap(), edited);
+    };
+    for case in DownloadFault::CASES {
+        fault.set(Some(("clover-rabbit.pack.json", case)));
+        let rejected = replace_rabbit(&config.0, &source, true).unwrap_err();
+        assert!(rejected.contains(case.expected_error()), "{rejected}");
+        offline.set(true);
+        assert_last_working_pair();
+        offline.set(false);
+    }
+    fault.set(None);
+
+    let pack_root = config.0.join("companion-packs");
+    let stage = pack_root.join(format!(".catalog-{}", uuid::Uuid::new_v4()));
+    hypermesh_local_storage::create_dir(&stage).unwrap();
+    browse_pack(&stage, &source, "Clover Rabbit", None).unwrap();
+    let staged_working = stage.join("companion-packs/clover-rabbit/working.wav");
+    assert_eq!(fs::read(&staged_working).unwrap(), original);
+    let backup = pack_root.join(".previous-clover-rabbit");
+    fs::rename(&rabbit_dir, &backup).unwrap();
+    assert!(!rabbit_dir.exists());
+    offline.set(true);
+    assert_last_working_pair();
+    assert_eq!(fs::read(staged_working).unwrap(), original);
+    assert!(!backup.exists());
+
+    offline.set(false);
     replace_rabbit(&config.0, &source, true).unwrap();
     assert_eq!(fs::read(&working).unwrap(), original);
     assert!(!config
@@ -245,7 +302,6 @@ fn published_packs_linux_contract() {
     );
     let beetle = beetle.unwrap();
     let rabbit = rabbit.unwrap();
-    let signals = presentation::signals(Mascot::Automation, false, &Pose::Idle, None, None);
     let (mut sprites, mut cursor) = load_appearance(Some(&beetle));
     assert!(
         sprites.select(&signals),

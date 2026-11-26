@@ -7,7 +7,9 @@ use std::{io::Read, process::Stdio};
 use tokio::io::AsyncReadExt;
 
 mod interactive;
+mod process_group;
 use interactive::{ControlRequest, Master, Terminal};
+use process_group::ProcessGroup;
 
 const OUTPUT_LIMIT: usize = 128 * 1024;
 const PAGE_SIZE: usize = 16 * 1024;
@@ -198,7 +200,7 @@ impl Run {
     }
 
     fn page(&self, id: Uuid, cursor: usize, allowed: bool) -> Result<Value, ApiError> {
-        let (end, output) = if self.status == "revoked" && cursor <= self.discarded_output {
+        let (end, output) = if self.output.is_empty() && cursor <= self.discarded_output {
             (cursor, &[][..])
         } else {
             let end = self.output.len().min(cursor.saturating_add(PAGE_SIZE));
@@ -419,6 +421,8 @@ fn spawn(task: &Task) -> Result<Process, ApiError> {
         .env("LANG", "C")
         .kill_on_drop(true);
     let master = if task.interactive {
+        process_group::validate_interactive()
+            .map_err(|_| ApiError::unavailable("Terminal session cleanup is unavailable"))?;
         Some(Master::attach(&mut command).map_err(|_| {
             ApiError::unavailable("Could not open a private terminal for this task")
         })?)
@@ -433,40 +437,15 @@ fn spawn(task: &Task) -> Result<Process, ApiError> {
     let child = command
         .spawn()
         .map_err(|_| ApiError::unavailable("Could not start the declared terminal task"))?;
-    let group = ProcessGroup(child.id().expect("spawned child has an ID") as i32);
+    let group = ProcessGroup::new(
+        child.id().expect("spawned child has an ID") as i32,
+        task.interactive,
+    );
     Ok(Process {
         child,
         group,
         master,
     })
-}
-
-struct ProcessGroup(i32);
-impl ProcessGroup {
-    fn leader_exited(&self) -> std::io::Result<bool> {
-        // Keep the leader's PID reserved until the group has been stopped.
-        let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
-        let result = unsafe {
-            libc::waitid(
-                libc::P_PID,
-                self.0 as libc::id_t,
-                &mut info,
-                libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
-            )
-        };
-        if result < 0 {
-            return Err(std::io::Error::last_os_error());
-        }
-        Ok(unsafe { info.si_pid() } == self.0)
-    }
-}
-impl Drop for ProcessGroup {
-    fn drop(&mut self) {
-        // The child is the leader of the dedicated group.
-        unsafe {
-            libc::kill(-self.0, libc::SIGKILL);
-        }
-    }
 }
 
 async fn wait_for_revocation(
@@ -559,10 +538,25 @@ async fn supervise(
             },
         }
     };
-    drop(group);
+    if let Some(run) = lock(&state.terminal_tasks.records).get_mut(&id) {
+        run.cancel = true;
+        if let Some(terminal) = run.terminal.as_mut() {
+            terminal.close();
+        }
+        if status == "revoked" {
+            run.discarded_output = run.output.len();
+            run.output.clear();
+        }
+    }
+    let stopped = matches!(
+        tokio::task::spawn_blocking(move || group.stop()).await,
+        Ok(Ok(()))
+    );
     let exit = child.wait().await.ok();
     let mut code = None;
-    if status == "exited" {
+    if !stopped {
+        status = "failed";
+    } else if status == "exited" {
         code = exit.as_ref().and_then(std::process::ExitStatus::code);
         status = if exit.is_some_and(|exit| exit.success()) {
             "completed"
@@ -574,13 +568,6 @@ async fn supervise(
     if !state.has_session(scope.session) {
         records.remove(&id);
     } else if let Some(run) = records.get_mut(&id) {
-        if status == "revoked" {
-            run.discarded_output = run.output.len();
-            run.output.clear();
-        }
-        if let Some(terminal) = run.terminal.as_mut() {
-            terminal.close();
-        }
         run.status = status;
         run.exit_code = code;
     }

@@ -61,7 +61,9 @@ of the same start ID and revision on the same instance returns the existing run.
 Add `"interactive": true` to the owner-only declaration to give the command
 a private pseudo-terminal. The default declaration keeps its output-only mode.
 The interactive command gets `TERM=dumb` in addition to the clean environment.
-It can prompt for input and react to terminal resizing.
+It can prompt for input and react to terminal resizing. Visor stops all
+process groups in the terminal session during teardown. The Linux path uses
+kernel process handles to keep signalling bound to the original process.
 
 In VS Code choose **Attach with input**, enter the task ID and optional
 cursor, and confirm the claim or transfer. **Attach to task** follows output

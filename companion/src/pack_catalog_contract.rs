@@ -12,7 +12,7 @@ use crate::{auth::Pose, mascot::Mascot, pack_catalog_dialog::browse_from, presen
 
 #[path = "../../ci/fixtures/published_companion_catalog.rs"]
 mod fixture;
-use fixture::DownloadFault;
+use fixture::{CatalogFault, DownloadFault};
 
 const PACKS: [(&str, &str, bool); 4] = [
     ("ember-cat", "Ember Cat", true),
@@ -282,6 +282,42 @@ fn published_packs_linux_contract() {
     assert_last_working_pair();
     assert_eq!(fs::read(staged_working).unwrap(), original);
     assert!(!backup.exists());
+
+    for case in CatalogFault::CASES {
+        let read_fault = |path: &str, limit| case.read(Path::new(&root), path, limit);
+        let rejected = browse_from(
+            &config.0,
+            &mut |_, _| panic!("{case:?} must not present a catalog listing"),
+            &CatalogSource::new(&read_fault),
+            false,
+            |_, _| panic!("{case:?} must not open a preview"),
+        )
+        .unwrap_err();
+        assert!(
+            rejected.contains(case.expected_error()),
+            "{case:?}: {rejected}"
+        );
+        assert_last_working_pair();
+        let Selection::Appearance {
+            id, mut sprites, ..
+        } = select("Appearance", "Visor Beetle [visor-beetle]")
+        else {
+            panic!("expected installed appearance after {case:?}");
+        };
+        assert_eq!(id, "visor-beetle");
+        assert!(sprites.select(&signals));
+        assert_eq!(sprites.timing(Mascot::Automation), (90, 8, true));
+        let Selection::Voice { id, voice } = select("Voice", "Clover Rabbit [clover-rabbit]")
+        else {
+            panic!("expected installed voice after {case:?}");
+        };
+        assert_eq!(id, "clover-rabbit");
+        let cue = voice
+            .cue_for(&signals)
+            .expect("installed Clover Rabbit cue");
+        assert_eq!(cue.rate, edited_wave.rate);
+        assert_eq!(cue.pcm, edited_wave.pcm);
+    }
 
     offline.set(false);
     replace_rabbit(&config.0, &source, true).unwrap();

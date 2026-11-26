@@ -12,7 +12,7 @@ use catalog::read_download;
 
 #[path = "../ci/fixtures/published_companion_catalog.rs"]
 mod fixture;
-use fixture::{read_with_fault, DownloadFault, ASSETS, SOURCE};
+use fixture::{read_with_fault, CatalogFault, DownloadFault, ASSETS, SOURCE};
 
 struct TempConfig(PathBuf);
 
@@ -226,12 +226,49 @@ fn published_packs_native_contract() {
     fs::rename(&rabbit_dir, &backup).unwrap();
     assert!(!rabbit_dir.exists());
     offline.set(true);
-    let recovered_voice = load("voice");
-    assert_eq!(recovered_voice, known_good);
-    assert_eq!(load("appearance")["id"], "visor-beetle");
+    assert_eq!(load("voice"), known_good);
+    let recovered_appearance = load("appearance");
+    assert_eq!(recovered_appearance["id"], "visor-beetle");
     assert_eq!(fs::read(&working).unwrap(), edited);
     assert_eq!(fs::read(staged_working).unwrap(), original);
     assert!(!backup.exists());
+
+    let expected_choices = request(json!({"action":"pack-list"}));
+    let mut catalog_failures = Vec::new();
+    for case in CatalogFault::CASES {
+        let read_fault = |path: &str, limit| case.read(Path::new(&fixture), path, limit);
+        let response = request_from(
+            &config.0,
+            json!({"action":"pack-catalog-list"}),
+            &catalog::CatalogSource::new(&read_fault),
+        );
+        assert_eq!(response["status"], 200);
+        let body = &response["body"];
+        assert!(
+            body["error"]
+                .as_str()
+                .is_some_and(|error| error.contains(case.expected_error())),
+            "{case:?}: {body}"
+        );
+        assert!(body.get("packs").is_none());
+        catalog_failures.push(body.clone());
+
+        // The healthy transport remains disabled while installed choices and
+        // their media are read or reselected through the native requests.
+        assert_eq!(request(json!({"action":"pack-list"})), expected_choices);
+        for (medium, expected) in [
+            ("appearance", &recovered_appearance),
+            ("voice", &known_good),
+        ] {
+            assert_eq!(&load(medium), expected);
+            assert_eq!(
+                &request(json!({"action":"pack-select", "medium":medium, "id":expected["id"]})),
+                expected
+            );
+        }
+        assert_eq!(fs::read(&working).unwrap(), edited);
+    }
+    let recovered_voice = load("voice");
 
     offline.set(false);
     assert_eq!(replace(rabbit_entry, true)["changed"], true);
@@ -306,6 +343,7 @@ fn published_packs_native_contract() {
     assert_eq!(load("voice"), muted);
     let responses = json!({"catalog":listing,"previews":previews,"appearance":appearance,
                            "voice":voice,"cues":cues,"recovered_voice":recovered_voice,
+                           "catalog_failures":catalog_failures,
                            "after_appearance_removal":{"appearance":bundled,"voice":remaining_voice},
                            "after_voice_removal":{"appearance":bundled,"voice":muted}});
     fs::write(output, serde_json::to_vec(&responses).unwrap()).unwrap();

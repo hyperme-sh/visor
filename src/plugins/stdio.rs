@@ -54,14 +54,7 @@ impl Channel {
     }
 }
 
-pub(super) async fn invoke(
-    package: &Package,
-    staging: &Path,
-    input: Value,
-    duration: Duration,
-    live: &impl Fn() -> bool,
-) -> Result<Value, Error> {
-    let started = Instant::now();
+fn prepare(staging: &Path, bytes: &[u8]) -> Result<super::Staged, Error> {
     let bwrap = std::fs::symlink_metadata(BWRAP).map_err(|_| Error::Unavailable)?;
     if !bwrap.is_file()
         || bwrap.uid() != 0
@@ -70,7 +63,22 @@ pub(super) async fn invoke(
     {
         return Err(Error::Unavailable);
     }
-    let executable = stage_file(staging, &package.executable)?;
+    stage_file(staging, bytes)
+}
+
+pub(super) async fn invoke(
+    package: &Package,
+    staging: &Path,
+    input: Value,
+    duration: Duration,
+    live: &impl Fn() -> bool,
+) -> Result<Value, Error> {
+    let started = Instant::now();
+    let staging = staging.to_owned();
+    let bytes = package.executable.clone();
+    let executable = tokio::task::spawn_blocking(move || prepare(&staging, &bytes))
+        .await
+        .map_err(|_| Error::Unavailable)??;
     if !live() {
         return Err(Error::Cancelled);
     }

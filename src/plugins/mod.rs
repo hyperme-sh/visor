@@ -107,7 +107,7 @@ struct Manifest {
 pub(crate) struct Package {
     manifest: Manifest,
     digest: String,
-    executable: Vec<u8>,
+    executable: Arc<[u8]>,
     tool: Tool,
     input: jsonschema::Validator,
     output: jsonschema::Validator,
@@ -196,7 +196,7 @@ impl Package {
         Ok(Self {
             manifest,
             digest,
-            executable,
+            executable: executable.into(),
             tool,
             input,
             output,

@@ -268,9 +268,44 @@ pub fn perform(
     body: ReadRequest,
     identity: &Value,
     workspace: &str,
-    mut reviewer: impl FnMut(Value, bool) -> Result<Value, &'static str>,
+    reviewer: impl FnMut(Value, bool) -> Result<Value, &'static str>,
     valid: impl Fn() -> bool,
 ) -> Result<Value, &'static str> {
+    perform_bytes(dir, body, identity, workspace, reviewer, valid).map(ReadOutcome::response)
+}
+
+#[cfg(unix)]
+pub(crate) struct ReadOutcome {
+    pub bytes: Vec<u8>,
+    pub expires_at: f64,
+    request_id: Uuid,
+    learned: bool,
+    reused: bool,
+    review_pending: bool,
+}
+
+#[cfg(unix)]
+impl ReadOutcome {
+    pub fn response(self) -> Value {
+        json!({
+            "request_id":self.request_id,
+            "content_base64":base64::engine::general_purpose::STANDARD.encode(self.bytes),
+            "learned":self.learned,
+            "reused":self.reused,
+            "review_pending":self.review_pending,
+        })
+    }
+}
+
+#[cfg(unix)]
+pub(crate) fn perform_bytes(
+    dir: &Path,
+    body: ReadRequest,
+    identity: &Value,
+    workspace: &str,
+    mut reviewer: impl FnMut(Value, bool) -> Result<Value, &'static str>,
+    valid: impl Fn() -> bool,
+) -> Result<ReadOutcome, &'static str> {
     body.selection.validate()?;
     if body.request_id.is_nil()
         || body.session_id.is_nil()
@@ -384,9 +419,14 @@ pub fn perform(
     if !valid() || now() >= final_review["expires_at"].as_f64().ok_or(ERROR)? {
         return Err(ERROR);
     }
-    Ok(
-        json!({"request_id":body.request_id,"content_base64":base64::engine::general_purpose::STANDARD.encode(bytes),"learned":learn,"reused":reused,"review_pending":pending}),
-    )
+    Ok(ReadOutcome {
+        bytes,
+        expires_at: expiry,
+        request_id: body.request_id,
+        learned: learn,
+        reused,
+        review_pending: pending,
+    })
 }
 
 #[cfg(all(test, unix))]

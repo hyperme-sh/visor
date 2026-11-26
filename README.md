@@ -62,6 +62,13 @@ See [downloads](https://hyperme.sh/visor),
 [container deployment](container/README.md), [remote bot polling](docs/remote-bots.md),
 and [report a problem](https://github.com/hyperme-sh/visor/issues/new).
 
+## Public plugins
+
+Build and run a sandboxed local tool using the [public plugin API](plugins/README.md),
+which includes versioned schemas, a Rust SDK, an independent example, and a
+conformance runner. The first profile receives data only from an admitted
+workspace read.
+
 ## Linux build and tests
 
 Stable Rust. The workspace tests do not need a display server.

@@ -33,6 +33,13 @@ pub(crate) struct Call {
     pub arguments: Value,
 }
 impl Bridge {
+    #[cfg(all(test, target_os = "linux"))]
+    pub(crate) fn plugin_contract(socket: PathBuf) -> Self {
+        let mut bridge = Self::new(socket).expect("absolute contract socket");
+        bridge.uid = unsafe { libc::geteuid() };
+        bridge
+    }
+
     pub fn new(socket: PathBuf) -> Result<Self, ()> {
         #[cfg(windows)]
         if socket != std::path::Path::new(hypermesh_local_transport::WINDOWS_CRASH_PIPE) && socket != std::path::Path::new(hypermesh_local_transport::WINDOWS_FEEDBACK_PIPE) { return Err(()); }

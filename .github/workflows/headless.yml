@@ -38,6 +38,23 @@ jobs:
         run: |
           cargo test --locked -p hypermesh-session --no-default-features --lib
           cargo test --locked -p hypermesh-visor --no-default-features --features headless --lib
+      - name: Public plugin API and independent package contracts
+        if: matrix.arch == 'x86_64'
+        run: |
+          if ! command -v bwrap >/dev/null; then
+            sudo apt-get update
+            sudo apt-get install -y --no-install-recommends bubblewrap
+          fi
+          if [ "$(sysctl -n kernel.apparmor_restrict_unprivileged_userns 2>/dev/null || true)" = 1 ]; then
+            profile=/usr/share/apparmor/extra-profiles/bwrap-userns-restrict
+            if [ ! -r "$profile" ]; then
+              sudo apt-get update
+              sudo apt-get install -y --no-install-recommends apparmor-profiles
+            fi
+            # Load Ubuntu's sandbox launcher profile on this disposable CI runner.
+            sudo apparmor_parser --replace "$profile"
+          fi
+          bash ci/plugin-contract.sh
       - name: Build headless daemon
         run: cargo build --release --locked -p hypermesh-visor --no-default-features --features headless
       - uses: actions/upload-artifact@v4

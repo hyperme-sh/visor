@@ -1,0 +1,39 @@
+name: Wayland takeover prototype
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/wayland-takeover-prototype.yml
+      - experiments/wayland-takeover/**
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/wayland-takeover-prototype.yml
+      - experiments/wayland-takeover/**
+
+permissions:
+  contents: read
+
+concurrency:
+  group: wayland-takeover-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  contracts:
+    name: KWin and RemoteDesktop takeover contracts
+    runs-on: ubuntu-24.04
+    container: debian:13-slim@sha256:8aa5a7bf5a1955bddbe7d74fcdd0b91ab30e74362a8b73af672b0481b35b44a0
+    timeout-minutes: 45
+    steps:
+      - name: Install build dependencies
+        run: |
+          set -eu
+          printf '%s\n' 'deb-src http://deb.debian.org/debian trixie main' > /etc/apt/sources.list.d/visor-source.list
+          apt-get -q update
+          apt-get -qy --no-install-recommends install build-essential ca-certificates git ninja-build libei-dev python3-dbusmock python3-pytest
+          apt-get -qy --no-install-recommends build-dep kwin xdg-desktop-portal-kde xdg-desktop-portal
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Compile patches and check queue cutoff and portal opt-in
+        run: bash experiments/wayland-takeover/qualify.sh

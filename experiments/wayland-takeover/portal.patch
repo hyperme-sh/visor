@@ -1,0 +1,296 @@
+diff --git a/data/org.freedesktop.impl.portal.RemoteDesktop.xml b/data/org.freedesktop.impl.portal.RemoteDesktop.xml
+index 9f1a3b5..0e7033f 100644
+--- a/data/org.freedesktop.impl.portal.RemoteDesktop.xml
++++ b/data/org.freedesktop.impl.portal.RemoteDesktop.xml
+@@ -421,6 +421,27 @@
+       <arg type="a{sv}" name="options" direction="in"/>
+       <arg type="h" name="fd" direction="out"/>
+     </method>
++
++    <!--
++        ConnectToEISWithLocalTakeover:
++        @session_handle: Object path for the RemoteDesktop session
++        @app_id: App id of the application
++        @options: Vardict with optional further information
++        @fd: File descriptor for a libei sender
++
++        Accept only when the backend can give a locally approved session an
++        EIS sender that the compositor stops on physical input. There is no
++        fallback to ConnectToEIS.
++    -->
++    <method name="ConnectToEISWithLocalTakeover">
++      <annotation name="org.gtk.GDBus.C.Name" value="connect_to_eis_with_local_takeover"/>
++      <annotation name="org.gtk.GDBus.C.UnixFD" value="true"/>
++      <arg type="o" name="session_handle" direction="in"/>
++      <arg type="s" name="app_id" direction="in"/>
++      <annotation name="org.qtproject.QtDBus.QtTypeName.In2" value="QVariantMap"/>
++      <arg type="a{sv}" name="options" direction="in"/>
++      <arg type="h" name="fd" direction="out"/>
++    </method>
+     <!--
+         AvailableDeviceTypes:
+
+diff --git a/data/org.freedesktop.portal.RemoteDesktop.xml b/data/org.freedesktop.portal.RemoteDesktop.xml
+index bd3b754..0ec5abb 100644
+--- a/data/org.freedesktop.portal.RemoteDesktop.xml
++++ b/data/org.freedesktop.portal.RemoteDesktop.xml
+@@ -456,6 +456,30 @@
+       <arg type="h" name="fd" direction="out"/>
+     </method>
+
++    <!--
++        ConnectToEISWithLocalTakeover:
++        @session_handle: Object path for the RemoteDesktop session
++        @options: Vardict with optional further information
++        @fd: File descriptor for a libei sender
++
++        Prototype opt-in for a fresh, locally approved RemoteDesktop session
++        on a native seat. The compositor stops this EIS sender and closes the
++        session on local pointer motion, a button press, or a key press. The
++        portal returns an error if the selected backend cannot guarantee this.
++        The client must handle EIS disconnect and Session.Closed. Other
++        requirements of ConnectToEIS apply, including one connection per
++        started session and exclusive use of EIS after connecting.
++
++        This method was added in version 3 of this interface.
++    -->
++    <method name="ConnectToEISWithLocalTakeover">
++      <annotation name="org.gtk.GDBus.C.Name" value="connect_to_eis_with_local_takeover"/>
++      <annotation name="org.gtk.GDBus.C.UnixFD" value="true"/>
++      <arg type="o" name="session_handle" direction="in"/>
++      <arg type="a{sv}" name="options" direction="in"/>
++      <arg type="h" name="fd" direction="out"/>
++    </method>
++
+     <!--
+         AvailableDeviceTypes:
+
+diff --git a/src/remote-desktop.c b/src/remote-desktop.c
+index 5cfbd87..f71b2d9 100644
+--- a/src/remote-desktop.c
++++ b/src/remote-desktop.c
+@@ -1458,17 +1458,19 @@ static XdpOptionKey remote_desktop_connect_to_eis_options[] = {
+ };
+
+ static gboolean
+-handle_connect_to_eis (XdpDbusRemoteDesktop *object,
++connect_to_eis (XdpDbusRemoteDesktop *object,
+                        GDBusMethodInvocation *invocation,
+                        GUnixFDList *in_fd_list,
+                        const char *arg_session_handle,
+-                       GVariant *arg_options)
++                       GVariant *arg_options,
++                       gboolean local_takeover)
+ {
+   XdpCall *call = xdp_call_from_invocation (invocation);
+   XdpSession *session;
+   RemoteDesktopSession *remote_desktop_session;
+   g_autoptr(GUnixFDList) out_fd_list = NULL;
+   g_autoptr(GError) error = NULL;
++  g_autoptr(GVariant) options = NULL;
+   g_auto(GVariantBuilder) options_builder =
+     G_VARIANT_BUILDER_INIT (G_VARIANT_TYPE_VARDICT);
+   GVariant *fd;
+@@ -1532,15 +1534,14 @@ handle_connect_to_eis (XdpDbusRemoteDesktop *object,
+       return G_DBUS_METHOD_INVOCATION_HANDLED;
+     }
+
+-  if (!xdp_dbus_impl_remote_desktop_call_connect_to_eis_sync (impl,
+-                                                             arg_session_handle,
+-                                                             xdp_app_info_get_id (call->app_info),
+-                                                             g_variant_builder_end (&options_builder),
+-                                                             in_fd_list,
+-                                                             &fd,
+-                                                             &out_fd_list,
+-                                                             NULL,
+-                                                             &error))
++  options = g_variant_ref_sink (g_variant_builder_end (&options_builder));
++  gboolean (*connect_impl) (XdpDbusImplRemoteDesktop *, const gchar *, const gchar *,
++                            GVariant *, GUnixFDList *, GVariant **, GUnixFDList **,
++                            GCancellable *, GError **) =
++    local_takeover ? xdp_dbus_impl_remote_desktop_call_connect_to_eis_with_local_takeover_sync
++                   : xdp_dbus_impl_remote_desktop_call_connect_to_eis_sync;
++  if (!connect_impl (impl, arg_session_handle, xdp_app_info_get_id (call->app_info),
++                     options, in_fd_list, &fd, &out_fd_list, NULL, &error))
+     {
+       g_warning ("Failed to ConnectToEIS: %s", error->message);
+       g_dbus_method_invocation_return_gerror (invocation, error);
+@@ -1549,10 +1550,33 @@ handle_connect_to_eis (XdpDbusRemoteDesktop *object,
+
+   remote_desktop_session->uses_eis = TRUE;
+
+-  xdp_dbus_remote_desktop_complete_connect_to_eis (object, invocation, out_fd_list, fd);
++  if (local_takeover)
++    xdp_dbus_remote_desktop_complete_connect_to_eis_with_local_takeover (object, invocation, out_fd_list, fd);
++  else
++    xdp_dbus_remote_desktop_complete_connect_to_eis (object, invocation, out_fd_list, fd);
+   return G_DBUS_METHOD_INVOCATION_HANDLED;
+ }
+
++static gboolean
++handle_connect_to_eis (XdpDbusRemoteDesktop *object,
++                       GDBusMethodInvocation *invocation,
++                       GUnixFDList *in_fd_list,
++                       const char *arg_session_handle,
++                       GVariant *arg_options)
++{
++  return connect_to_eis (object, invocation, in_fd_list, arg_session_handle, arg_options, FALSE);
++}
++
++static gboolean
++handle_connect_to_eis_with_local_takeover (XdpDbusRemoteDesktop *object,
++                                           GDBusMethodInvocation *invocation,
++                                           GUnixFDList *in_fd_list,
++                                           const char *arg_session_handle,
++                                           GVariant *arg_options)
++{
++  return connect_to_eis (object, invocation, in_fd_list, arg_session_handle, arg_options, TRUE);
++}
++
+ static void
+ remote_desktop_iface_init (XdpDbusRemoteDesktopIface *iface)
+ {
+@@ -1572,6 +1596,7 @@ remote_desktop_iface_init (XdpDbusRemoteDesktopIface *iface)
+   iface->handle_notify_touch_up = handle_notify_touch_up;
+
+   iface->handle_connect_to_eis = handle_connect_to_eis;
++  iface->handle_connect_to_eis_with_local_takeover = handle_connect_to_eis_with_local_takeover;
+ }
+
+ static void
+@@ -1596,7 +1621,7 @@ on_supported_device_types_changed (GObject *gobject,
+ static void
+ remote_desktop_init (RemoteDesktop *remote_desktop)
+ {
+-  xdp_dbus_remote_desktop_set_version (XDP_DBUS_REMOTE_DESKTOP (remote_desktop), 2);
++  xdp_dbus_remote_desktop_set_version (XDP_DBUS_REMOTE_DESKTOP (remote_desktop), 3);
+
+   g_signal_connect (impl, "notify::supported-device-types",
+                     G_CALLBACK (on_supported_device_types_changed),
+diff --git a/tests/templates/remotedesktop.py b/tests/templates/remotedesktop.py
+index 3030fb2..20e21f7 100644
+--- a/tests/templates/remotedesktop.py
++++ b/tests/templates/remotedesktop.py
+@@ -31,6 +31,7 @@ class RemotedesktopParameters:
+     force_close: int
+     force_clipoboard_enabled: bool
+     fail_connect_to_eis: bool
++    supports_local_takeover: bool
+
+
+ def load(mock, parameters={}):
+@@ -44,6 +45,7 @@ def load(mock, parameters={}):
+         force_close=parameters.get("force-close", 0),
+         force_clipoboard_enabled=parameters.get("force-clipboard-enabled", False),
+         fail_connect_to_eis=parameters.get("fail-connect-to-eis", False),
++        supports_local_takeover=parameters.get("supports-local-takeover", False),
+     )
+
+     mock.AddProperties(
+@@ -177,6 +179,27 @@ def ConnectToEIS(self, session_handle, app_id, options):
+         raise e
+
+
++@dbus.service.method(MAIN_IFACE, in_signature="osa{sv}", out_signature="h")
++def ConnectToEISWithLocalTakeover(self, session_handle, app_id, options):
++    if not self.remotedesktop_params.supports_local_takeover:
++        raise dbus.exceptions.DBusException(
++            "Unsupported local takeover",
++            name="org.freedesktop.DBus.Error.UnknownMethod",
++        )
++
++    assert session_handle in self.sessions
++    sockets = socket.socketpair()
++    self.eis_socket = sockets[0]
++    assert self.eis_socket.send(b"LOCAL") == 5
++    with sockets[1]:
++        return dbus.types.UnixFd(sockets[1])
++
++
++@dbus.service.method(MOCK_IFACE, in_signature="o", out_signature="")
++def SimulateLocalTakeover(self, session_handle):
++    self.sessions[session_handle].close()
++
++
+ @dbus.service.method(MOCK_IFACE, in_signature="s", out_signature="s")
+ def GetSessionAppId(self, session_handle):
+     logger.debug(f"GetSessionAppId({session_handle})")
+diff --git a/tests/test_remotedesktop.py b/tests/test_remotedesktop.py
+index 3627c34..f1f429b 100644
+--- a/tests/test_remotedesktop.py
++++ b/tests/test_remotedesktop.py
+@@ -17,7 +17,7 @@ def required_templates():
+
+ class TestRemoteDesktop:
+     def test_version(self, portals, dbus_con):
+-        xdp.check_version(dbus_con, "RemoteDesktop", 2)
++        xdp.check_version(dbus_con, "RemoteDesktop", 3)
+
+     def test_create_close_session(self, portals, dbus_con):
+         remotedesktop_intf = xdp.get_portal_iface(dbus_con, "RemoteDesktop")
+@@ -90,7 +90,11 @@ class TestRemoteDesktop:
+         # Now expect the backend to close it
+         xdp.wait_for(lambda: session.closed)
+
+-    def test_connect_to_eis(self, portals, dbus_con):
++    @pytest.mark.parametrize("method", ("ConnectToEIS", "ConnectToEISWithLocalTakeover"))
++    @pytest.mark.parametrize(
++        "template_params", ({"remotedesktop": {"supports-local-takeover": True}},)
++    )
++    def test_connect_to_eis(self, portals, dbus_con, method):
+         remotedesktop_intf = xdp.get_portal_iface(dbus_con, "RemoteDesktop")
+
+         request = xdp.Request(dbus_con, remotedesktop_intf)
+@@ -129,17 +133,31 @@ class TestRemoteDesktop:
+         assert response
+         assert response.response == 0
+
+-        fd = remotedesktop_intf.ConnectToEIS(
++        fd = remotedesktop_intf.get_dbus_method(method)(
+             session.handle,
+             dbus.Dictionary({}, signature="sv"),
+         )
+-        eis_socket = socket.fromfd(fd.take(), socket.AF_UNIX, socket.SOCK_STREAM)
+-        assert eis_socket.recv(10) == b"HELLO"
++        expected = b"LOCAL" if method == "ConnectToEISWithLocalTakeover" else b"HELLO"
++        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM, fileno=fd.take()) as eis_socket:
++            eis_socket.settimeout(2)
++            assert eis_socket.recv(10) == expected
++
++        if method == "ConnectToEISWithLocalTakeover":
++            mock_intf = xdp.get_mock_iface(dbus_con)
++            assert not mock_intf.GetMethodCalls("ConnectToEIS")
++            mock_intf.SimulateLocalTakeover(session.handle)
++            xdp.wait_for(lambda: session.closed)
++            with pytest.raises(dbus.exceptions.DBusException) as excinfo:
++                remotedesktop_intf.ConnectToEISWithLocalTakeover(
++                    session.handle, dbus.Dictionary({}, signature="sv")
++                )
++            assert excinfo.value.get_dbus_name() == "org.freedesktop.DBus.Error.AccessDenied"
+
++    @pytest.mark.parametrize("method", ("ConnectToEIS", "ConnectToEISWithLocalTakeover"))
+     @pytest.mark.parametrize(
+         "template_params", ({"remotedesktop": {"fail-connect-to-eis": True}},)
+     )
+-    def test_connect_to_eis_fail(self, portals, dbus_con):
++    def test_connect_to_eis_fail(self, portals, dbus_con, method):
+         remotedesktop_intf = xdp.get_portal_iface(dbus_con, "RemoteDesktop")
+
+         request = xdp.Request(dbus_con, remotedesktop_intf)
+@@ -179,10 +197,14 @@ class TestRemoteDesktop:
+         assert response.response == 0
+
+         with pytest.raises(dbus.exceptions.DBusException) as excinfo:
+-            _ = remotedesktop_intf.ConnectToEIS(
++            remotedesktop_intf.get_dbus_method(method)(
+                 session.handle, dbus.Dictionary({}, signature="sv")
+             )
+-        assert "Purposely failing ConnectToEIS" in excinfo.value.get_dbus_message()
++        if method == "ConnectToEISWithLocalTakeover":
++            assert excinfo.value.get_dbus_name() == "org.freedesktop.DBus.Error.UnknownMethod"
++            assert not xdp.get_mock_iface(dbus_con).GetMethodCalls("ConnectToEIS")
++        else:
++            assert "Purposely failing ConnectToEIS" in excinfo.value.get_dbus_message()
+
+     def test_connect_to_eis_fail_notifies(self, portals, dbus_con):
+         remotedesktop_intf = xdp.get_portal_iface(dbus_con, "RemoteDesktop")

@@ -1,0 +1,170 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 47d7b0d..3aaeced 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -8,5 +8,6 @@ set(PROJECT_VERSION_MAJOR 6)
+ project(xdg-desktop-portal-kde VERSION ${PROJECT_VERSION})
+
+-set(PROJECT_DEP_VERSION "6.3.5")
++# Match the dependency floor used by Debian 13 for this Plasma build.
++set(PROJECT_DEP_VERSION "6.3.4")
+ set(QT_MIN_VERSION "6.7.0")
+ set(KF6_MIN_VERSION "6.10.0")
+diff --git a/src/remotedesktop.cpp b/src/remotedesktop.cpp
+index 44ceebc..c1dd784 100644
+--- a/src/remotedesktop.cpp
++++ b/src/remotedesktop.cpp
+@@ -19,4 +19,5 @@
+ #include <KNotification>
+ #include <QDBusConnection>
++#include <QDBusConnectionInterface>
+ #include <QDBusMessage>
+ #include <QDBusReply>
+@@ -200,4 +201,5 @@ uint RemoteDesktopPortal::Start(const QDBusObjectPath &handle,
+
+     bool restored = false;
++    bool approvedInDialog = false;
+
+     if (persist != ScreenCastPortal::NoPersist && session->restoreData().isValid()) {
+@@ -235,4 +237,5 @@ uint RemoteDesktopPortal::Start(const QDBusObjectPath &handle,
+                 return 1;
+             }
++            approvedInDialog = true;
+         }
+     }
+@@ -260,4 +263,5 @@ uint RemoteDesktopPortal::Start(const QDBusObjectPath &handle,
+     }
+     session->acquireStreamingInput();
++    session->setFreshLocalConsent(approvedInDialog && persist == ScreenCastPortal::NoPersist);
+
+     results.insert(QStringLiteral("devices"), QVariant::fromValue<uint>(session->deviceTypes()));
+@@ -446,23 +450,49 @@ QDBusUnixFileDescriptor
+ RemoteDesktopPortal::ConnectToEIS(const QDBusObjectPath &session_handle, const QString &app_id, const QVariantMap &options, const QDBusMessage &message)
+ {
+-    Q_UNUSED(options)
+-    Q_UNUSED(app_id)
++    Q_UNUSED(options);
++    return connectToEIS(session_handle, app_id, message, false);
++}
+
+-    RemoteDesktopSession *session = qobject_cast<RemoteDesktopSession *>(Session::getSession(session_handle.path()));
+-    if (!session) {
+-        qCWarning(XdgDesktopPortalKdeRemoteDesktop) << "Tried to call ConnectToEis on non-existing session " << session_handle.path();
++QDBusUnixFileDescriptor RemoteDesktopPortal::ConnectToEISWithLocalTakeover(const QDBusObjectPath &session_handle, const QString &app_id, const QVariantMap &options, const QDBusMessage &message)
++{
++    Q_UNUSED(options);
++    return connectToEIS(session_handle, app_id, message, true);
++}
++
++QDBusUnixFileDescriptor RemoteDesktopPortal::connectToEIS(const QDBusObjectPath &sessionHandle, const QString &appId, const QDBusMessage &message, bool localTakeover)
++{
++    auto bus = QDBusConnection::sessionBus();
++    const auto fail = [&bus, &message](QDBusError::ErrorType type, const QString &reason) {
++        message.setDelayedReply(true);
++        bus.send(message.createErrorReply(type, reason));
+         return QDBusUnixFileDescriptor();
++    };
++    auto session = qobject_cast<RemoteDesktopSession *>(Session::getSession(sessionHandle.path()));
++    if (!session) {
++        return fail(QDBusError::Failed, QStringLiteral("No such RemoteDesktop session"));
+     }
+
+-    auto msg = QDBusMessage::createMethodCall(kwinService(), kwinRemoteDesktopPath(), kwinRemoteDesktopInterface(), QStringLiteral("connectToEIS"));
++    if (localTakeover) {
++        const auto owner = bus.interface()->serviceOwner(QStringLiteral("org.freedesktop.portal.Desktop"));
++        if (!owner.isValid() || owner.value() != message.service() || session->appId() != appId || !session->hasFreshLocalConsent() || session->eisCookie()) {
++            return fail(QDBusError::AccessDenied, QStringLiteral("Local takeover requires a newly approved portal session"));
++        }
++        if (!bus.connect(kwinService(), kwinRemoteDesktopPath(), kwinRemoteDesktopInterface(), QStringLiteral("LocalTakeover"), session, SLOT(localTakeover(int)))) {
++            return fail(QDBusError::Failed, QStringLiteral("Unable to monitor the KWin session"));
++        }
++    }
++
++    const auto method = localTakeover ? QStringLiteral("connectToEISWithLocalTakeover") : QStringLiteral("connectToEIS");
++    auto msg = QDBusMessage::createMethodCall(kwinService(), kwinRemoteDesktopPath(), kwinRemoteDesktopInterface(), method);
+     msg.setArguments({static_cast<int>(session->deviceTypes())});
+     // Using pending reply for multiple return values
+-    QDBusPendingReply<QDBusUnixFileDescriptor, int> reply = QDBusConnection::sessionBus().call(msg);
++    QDBusPendingReply<QDBusUnixFileDescriptor, int> reply = bus.call(msg, QDBus::Block);
+     reply.waitForFinished();
+-    if (reply.isError()) {
++    if (reply.isError() || !reply.argumentAt<0>().isValid() || reply.argumentAt<1>() <= 0) {
+         qCWarning(XdgDesktopPortalKdeRemoteDesktop) << "Failed to connect to EIS:" << reply.error();
+-        auto error = message.createErrorReply(QDBusError::Failed, QStringLiteral("Failed to connect to to EIS"));
+-        QDBusConnection::sessionBus().send(error);
+-        return QDBusUnixFileDescriptor();
++        if (localTakeover) {
++            bus.disconnect(kwinService(), kwinRemoteDesktopPath(), kwinRemoteDesktopInterface(), QStringLiteral("LocalTakeover"), session, SLOT(localTakeover(int)));
++        }
++        return fail(QDBusError::Failed, QStringLiteral("Unable to connect to the requested KWin EIS session"));
+     }
+     session->setEisCookie(reply.argumentAt<1>());
+diff --git a/src/remotedesktop.h b/src/remotedesktop.h
+index 9e45290..41b9ed0 100644
+--- a/src/remotedesktop.h
++++ b/src/remotedesktop.h
+@@ -37,5 +37,5 @@ public:
+     uint version() const
+     {
+-        return 2;
++        return 3;
+     }
+     uint AvailableDeviceTypes() const
+@@ -85,4 +85,8 @@ public Q_SLOTS:
+
+     QDBusUnixFileDescriptor ConnectToEIS(const QDBusObjectPath &session_handle, const QString &app_id, const QVariantMap &options, const QDBusMessage &message);
++    QDBusUnixFileDescriptor ConnectToEISWithLocalTakeover(const QDBusObjectPath &session_handle, const QString &app_id, const QVariantMap &options, const QDBusMessage &message);
++
++private:
++    QDBusUnixFileDescriptor connectToEIS(const QDBusObjectPath &sessionHandle, const QString &appId, const QDBusMessage &message, bool localTakeover);
+ };
+ Q_DECLARE_OPERATORS_FOR_FLAGS(RemoteDesktopPortal::DeviceTypes)
+diff --git a/src/session.cpp b/src/session.cpp
+index cc9ffb1..b58c375 100644
+--- a/src/session.cpp
++++ b/src/session.cpp
+@@ -268,4 +268,22 @@ int RemoteDesktopSession::eisCookie() const
+ }
+
++void RemoteDesktopSession::setFreshLocalConsent(bool approved)
++{
++    m_freshLocalConsent = approved;
++}
++
++bool RemoteDesktopSession::hasFreshLocalConsent() const
++{
++    return m_freshLocalConsent;
++}
++
++void RemoteDesktopSession::localTakeover(int cookie)
++{
++    if (m_cookie != 0 && cookie == m_cookie) {
++        m_cookie = 0;
++        close();
++    }
++}
++
+ void RemoteDesktopSession::acquireStreamingInput()
+ {
+diff --git a/src/session.h b/src/session.h
+index e1688e4..7bd7f66 100644
+--- a/src/session.h
++++ b/src/session.h
+@@ -150,5 +150,11 @@ public:
+     void setEisCookie(int cookie);
+     int eisCookie() const;
++    void setFreshLocalConsent(bool approved);
++    bool hasFreshLocalConsent() const;
+
++public Q_SLOTS:
++    void localTakeover(int cookie);
++
++public:
+     SessionType type() const override
+     {
+@@ -160,4 +166,5 @@ private:
+     RemoteDesktopPortal::DeviceTypes m_deviceTypes;
+     bool m_acquired = false;
++    bool m_freshLocalConsent = false;
+     int m_cookie = 0;
+ };

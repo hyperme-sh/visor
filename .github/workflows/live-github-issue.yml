@@ -1,0 +1,89 @@
+name: Live GitHub issue contract
+on:
+  workflow_dispatch:
+    inputs:
+      published_plugin_index:
+        description: Published Visor TEST OCI index digest for this main revision
+        type: string
+      live_github_issue_account:
+        description: Numeric GitHub user ID of the scoped credential owner
+        type: string
+      receiver:
+        description: Run ID and attempt of the receiving CI run (encrypted delivery only)
+        type: string
+      amd64_envelope:
+        description: Token sealed to the amd64 runner public key (encrypted delivery only)
+        type: string
+      arm64_envelope:
+        description: Token sealed to the arm64 runner public key (encrypted delivery only)
+        type: string
+permissions:
+  contents: read
+jobs:
+  live-container-github-issue:
+    if: github.ref == 'refs/heads/main' && !inputs.receiver
+    permissions:
+      contents: read
+      actions: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            arch: amd64
+          - runner: ubuntu-24.04-arm
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Generate an ephemeral runner key
+        env:
+          PUBLISHED_TEST_INDEX: ${{ inputs.published_plugin_index }}
+          LIVE_GITHUB_ISSUE_ACCOUNT: ${{ inputs.live_github_issue_account }}
+        run: |
+          [[ "$PUBLISHED_TEST_INDEX" =~ ^sha256:[a-f0-9]{64}$ && "$LIVE_GITHUB_ISSUE_ACCOUNT" =~ ^[1-9][0-9]{0,19}$ ]]
+          umask 077
+          openssl genpkey -quiet -algorithm RSA -pkeyopt rsa_keygen_bits:3072 -out "$RUNNER_TEMP/github-issue-key.pem"
+          openssl pkey -in "$RUNNER_TEMP/github-issue-key.pem" -pubout -out "$RUNNER_TEMP/github-issue-recipient.pem"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: github-issue-recipient-${{ github.run_attempt }}-${{ matrix.arch }}
+          path: ${{ runner.temp }}/github-issue-recipient.pem
+          retention-days: 1
+          if-no-files-found: error
+      - name: Read the live Visor issue through the bundled plugin in TEST
+        env:
+          EXPECTED_ARCH: ${{ matrix.arch }}
+          PUBLISHED_TEST_INDEX: ${{ inputs.published_plugin_index }}
+          LIVE_GITHUB_ISSUE_ACCOUNT: ${{ inputs.live_github_issue_account }}
+          GH_TOKEN: ${{ github.token }}
+        run: bash ci/container/live-github-issue-contract.sh
+      - name: Remove the runner key
+        if: always()
+        run: rm -f -- "$RUNNER_TEMP/github-issue-key.pem"
+
+  deliver-envelopes:
+    if: github.ref == 'refs/heads/main' && inputs.receiver
+    runs-on: ubuntu-24.04
+    timeout-minutes: 3
+    steps:
+      - name: Stage the encrypted envelopes
+        env:
+          RECEIVER: ${{ inputs.receiver }}
+          AMD64_ENVELOPE: ${{ inputs.amd64_envelope }}
+          ARM64_ENVELOPE: ${{ inputs.arm64_envelope }}
+        run: |
+          [[ "$RECEIVER" =~ ^[1-9][0-9]*-[1-9][0-9]*$ ]]
+          [[ "$AMD64_ENVELOPE" =~ ^[A-Za-z0-9+/]{512}$ && "$ARM64_ENVELOPE" =~ ^[A-Za-z0-9+/]{512}$ ]]
+          install -d -m 0700 "$RUNNER_TEMP/github-issue-envelopes"
+          printf '%s' "$AMD64_ENVELOPE" > "$RUNNER_TEMP/github-issue-envelopes/amd64"
+          printf '%s' "$ARM64_ENVELOPE" > "$RUNNER_TEMP/github-issue-envelopes/arm64"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: github-issue-envelopes-${{ inputs.receiver }}
+          path: ${{ runner.temp }}/github-issue-envelopes/
+          retention-days: 1
+          if-no-files-found: error

@@ -53,9 +53,38 @@ remove them explicitly rather than deleting unrelated resources.
 Networking is off by default. Enabling network access is an operator decision;
 apply an egress policy appropriate to the apps and MCP services in use. Local
 HTTP/SSE fixtures work over each container's own loopback interface.
-The bundled GitHub issue plugin can start in this profile. Live GitHub reads
-require explicit egress from Visor's broker. The worker itself is confined to
-its standard I/O pipes.
+The bundled GitHub issue plugin can start in this profile. The worker itself is
+confined to its standard I/O pipes.
+
+## Opt in to live GitHub issue reads
+
+On a Linux Docker host, run the GitHub API relay in its own terminal with
+Python 3.11 or newer. Use a private directory and a new socket path.
+
+```sh
+install -d -m 0700 "$HOME/.local/run/visor"
+python3 container/github-issue-relay.py "$HOME/.local/run/visor/github.sock"
+```
+
+The relay opens TCP connections only to `api.github.com:443`. The socket is
+owner-only. Give its ownership to the host UID that maps to the writer's
+container UID `1000` if they differ. Keep the relay running and start the
+writer with the explicit overlay in a second terminal.
+
+```sh
+export VISOR_IMAGE=ghcr.io/hyperme-sh/hypermesh-visor:test
+export VISOR_GITHUB_ISSUE_RELAY_SOCKET="$HOME/.local/run/visor/github.sock"
+docker compose -p visor -f container/compose.yaml -f container/compose.github-issues.yaml up -d writer
+```
+
+Both containers retain `network_mode: none`. The overlay mounts the socket
+read-only for the selected writer. Visor's broker verifies GitHub TLS through
+the relay and applies its usual per-call session checks. Treat processes with
+the writer's UID as trusted local callers because they can reach that socket.
+Keep the socket out of shared directories. Recreate the writer if the relay
+is restarted so the bind mount refers to the new socket. Use the
+[plugin guide](../plugins/github-issue/README.md) to supply the session token and
+grant repository access. Code Mode still requires `--code-mode` on the grant.
 
 ## Native CI builds
 
@@ -69,6 +98,22 @@ images to GHCR and combines their registry digests into the moving `:test` chann
 PR jobs cannot publish. Each native job starts one disposable container with
 the standard Compose profile and checks bundled plugin discovery, opt-in,
 and execution. The issue-read fixture runs on that container's loopback.
+
+For an on-demand live check, give the `Live GitHub issue contract`
+workflow on `main` the published TEST index digest and the token owner's
+numeric GitHub user ID. With that run's ID, send a fine-grained token scoped
+to this repository with Issues read access from a local file.
+
+```sh
+python3 ci/container/send-live-github-issue-token.py RUN_ID /path/to/credential-file
+```
+
+Each runner creates a temporary key and publishes its public key. The sender
+uploads the token encrypted separately for each runner. The runners decrypt it
+in memory and pass it to their session vaults. The public keys and encrypted
+artifacts expire after one day. The native jobs read the public Visor issue
+[#353](https://github.com/hyperme-sh/visor/issues/353) directly and through
+explicitly opted-in Code Mode, using the same overlay on both architectures.
 
 Verify the downloaded archive against the manifest before loading it. After
 `docker image load`, compare the loaded image ID and platform with the manifest;

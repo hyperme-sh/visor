@@ -1,0 +1,11 @@
+services:
+  writer:
+    environment:
+      VISOR_GITHUB_ISSUE_EGRESS_SOCKET: /run/visor-github-issue.sock
+    volumes:
+      - type: bind
+        source: ${VISOR_GITHUB_ISSUE_RELAY_SOCKET:?Set the absolute path of the GitHub API relay socket}
+        target: /run/visor-github-issue.sock
+        read_only: true
+        bind:
+          create_host_path: false

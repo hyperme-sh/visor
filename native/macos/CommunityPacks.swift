@@ -73,6 +73,10 @@ private struct PackOperationError: LocalizedError {
               reply["status"] as? Int == 200, let body = reply["body"] as? [String: Any] else {
             throw PackOperationError(message: "The companion pack request failed.")
         }
+        return try checked(body)
+    }
+
+    private static func checked(_ body: [String: Any]) throws -> [String: Any] {
         if let message = body["error"] as? String { throw PackOperationError(message: message) }
         return body
     }
@@ -148,8 +152,17 @@ private struct PackOperationError: LocalizedError {
         let data = try Data(contentsOf: URL(fileURLWithPath: path))
         guard let fixture = try JSONSerialization.jsonObject(with: data) as? [String: Any],
               let catalog = fixture["catalog"] as? [String: Any],
+              let failures = fixture["catalog_failures"] as? [[String: Any]], !failures.isEmpty,
               let previews = fixture["previews"] as? [String: [String: Any]] else {
             throw PackOperationError(message: "Invalid catalog response fixture")
+        }
+        for failure in failures {
+            do {
+                _ = try checked(failure)
+                try verifyNativeUnit(false)
+            } catch let error as PackOperationError {
+                try verifyNativeUnit(error.message == (failure["error"] as? String))
+            }
         }
         let (_, entries) = try listing(catalog)
         for id in ["ember-cat", "scout-dog", "clover-rabbit", "visor-beetle"] {
@@ -166,6 +179,6 @@ private struct PackOperationError: LocalizedError {
             }
         }
         try NativeCompanionPacks.checkCatalogPair(data)
-        print("PASS community pack previews, offline recovery, and bundled art and mute after removal")
+        print("PASS catalog outage and malformed response handling, offline pack recovery, and fallback after removal")
     }
 }

@@ -133,6 +133,15 @@ internal static class CommunityPacks
     {
         using var response = JsonDocument.Parse(File.ReadAllBytes(responsePath));
         var data = response.RootElement;
+        var failedCatalogs = data.GetProperty("catalog_failures");
+        if (failedCatalogs.GetArrayLength() == 0) throw new InvalidOperationException("Missing catalog failures");
+        foreach (var failure in failedCatalogs.EnumerateArray())
+        {
+            string? expected = failure.GetProperty("error").GetString();
+            try { Checked(failure); }
+            catch (InvalidOperationException error) when (error.Message == expected) { continue; }
+            throw new InvalidOperationException("A failed catalog request was accepted");
+        }
         var entries = Entries(data.GetProperty("catalog"));
         foreach (string id in new[] { "ember-cat", "scout-dog", "clover-rabbit", "visor-beetle" })
         {
@@ -149,6 +158,6 @@ internal static class CommunityPacks
             }
         }
         CompanionPacks.CheckCatalogPair(data);
-        Console.WriteLine("PASS community pack previews, offline recovery, and bundled art and mute after removal");
+        Console.WriteLine("PASS catalog outage and malformed response handling, offline pack recovery, and fallback after removal");
     }
 }

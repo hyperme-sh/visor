@@ -65,7 +65,7 @@ jobs:
           ref: 8940a44fb026224b563b0a732fbc69920f54dc4b
           path: .ci-fixtures/companion-catalog
           persist-credentials: false
-      - name: Linux catalog install, replacement, removal, recovery, and presentation contracts
+      - name: Linux catalog install, replacement, removal, recovery, and availability contracts
         env:
           HYPERMESH_CATALOG_FIXTURE: ${{ github.workspace }}/.ci-fixtures/companion-catalog
         run: cargo test --locked -p hypermesh-companion --bin hypermesh-companion pack_picker::published_contract::published_packs_linux_contract -- --ignored --exact
@@ -128,7 +128,7 @@ jobs:
           ref: 8940a44fb026224b563b0a732fbc69920f54dc4b
           path: .ci-fixtures/companion-catalog
           persist-credentials: false
-      - name: Catalog install, replacement, removal, recovery, and presentation contracts
+      - name: Catalog install, replacement, removal, recovery, and availability contracts
         env:
           HYPERMESH_CATALOG_FIXTURE: ${{ github.workspace }}/.ci-fixtures/companion-catalog
           HYPERMESH_CATALOG_CONTRACT_OUTPUT: ${{ runner.temp }}/companion-catalog-responses.json
@@ -532,7 +532,7 @@ jobs:
           ref: 8940a44fb026224b563b0a732fbc69920f54dc4b
           path: .ci-fixtures/companion-catalog
           persist-credentials: false
-      - name: Catalog install, replacement, removal, recovery, and presentation contracts
+      - name: Catalog install, replacement, removal, recovery, and availability contracts
         env:
           HYPERMESH_CATALOG_FIXTURE: ${{ github.workspace }}/.ci-fixtures/companion-catalog
           HYPERMESH_CATALOG_CONTRACT_OUTPUT: ${{ runner.temp }}/companion-catalog-responses.json

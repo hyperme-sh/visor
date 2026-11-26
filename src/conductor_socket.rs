@@ -253,32 +253,60 @@ mod tests {
 
     #[test]
     fn socket_failures_keep_safe_conductor_attribution() {
-        use std::io::Write;
-        for (status, body, expected) in [
-            (503, "private upstream body", Some("upstream_http")),
-            (200, "private malformed body", Some("upstream_response")),
-            (403, "private policy body", None),
+        use std::io::{ErrorKind, Write};
+        for (status, body, expected_error, expected_report) in [
+            (
+                503,
+                "private upstream body",
+                "Conductor HTTP 503",
+                Some("upstream_http"),
+            ),
+            (
+                200,
+                "private malformed body",
+                "invalid Conductor response",
+                Some("upstream_response"),
+            ),
+            (403, "private policy body", "Conductor HTTP 403", None),
         ] {
             let fixture = Fixture::new();
             let listener = fixture.listener.try_clone().unwrap();
             let server = std::thread::spawn(move || {
                 let (mut stream, _) = listener.accept().unwrap();
                 read_request(&mut stream);
-                write!(stream,"HTTP/1.1 {status} Status\r\nX-Hypermesh-Version: 1.2.3\r\nX-Hypermesh-Release-Color: green\r\nX-Hypermesh-Canary: false\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",body.len()).unwrap();
+                let headers = format!(
+                    "HTTP/1.1 {status} Status\r\nX-Hypermesh-Version: 1.2.3\r\n\
+                     X-Hypermesh-Release-Color: green\r\nX-Hypermesh-Canary: false\r\n\
+                     Content-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len(),
+                );
+                stream.write_all(headers.as_bytes()).unwrap();
+                // Visor can close the connection as soon as it reads a non-200 status.
+                if let Err(error) = stream.write_all(body.as_bytes()) {
+                    assert!(
+                        status != 200
+                            && matches!(
+                                error.kind(),
+                                ErrorKind::BrokenPipe | ErrorKind::ConnectionReset
+                            ),
+                        "writing the Conductor fixture body failed for HTTP {status}: {error}",
+                    );
+                }
             });
             let reports = crate::telemetry::capture_reports(|| {
                 let door = SocketDoor::connect(fixture.path.clone(), None).unwrap();
-                assert!(door
+                let error = door
                     .forward(&ForwardedPrompt {
                         task_id: None,
                         prompt: "private prompt".into(),
                         api_key: "hm_org_fixture".into(),
-                        model: Some("model".into())
+                        model: Some("model".into()),
                     })
-                    .is_err());
+                    .unwrap_err();
+                assert_eq!(error, expected_error);
             });
             server.join().unwrap();
-            if let Some(expected) = expected {
+            if let Some(expected) = expected_report {
                 assert_eq!(reports.len(), 1);
                 let text = reports[0].to_string();
                 assert!(text.contains(expected));

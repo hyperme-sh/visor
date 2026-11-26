@@ -11,7 +11,7 @@ mod http;
 pub(crate) mod protocol;
 mod resources;
 mod prompts;
-mod schema;
+pub(crate) mod schema;
 mod subscription;
 pub mod trust;
 pub mod profiles;

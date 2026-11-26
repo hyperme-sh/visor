@@ -1,0 +1,72 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Visor plugin stdio v1 and v0 frames",
+  "$defs": {
+    "initRequest": {
+      "type": "object",
+      "required": ["jsonrpc", "id", "method", "params"],
+      "properties": {
+        "jsonrpc": {"const": "2.0"}, "id": {"const": 1}, "method": {"const": "initialize"},
+        "params": {
+          "type": "object", "required": ["plugin_id", "api_versions"],
+          "properties": {
+            "plugin_id": {"type": "string"},
+            "api_versions": {"enum": [[1, 0], [1], [0]]}
+          }
+        }
+      }
+    },
+    "initResult": {
+      "type": "object",
+      "required": ["plugin_id", "api_version"],
+      "properties": {"plugin_id": {"type": "string"}, "api_version": {"enum": [1, 0]}}
+    },
+    "callRequestV0": {
+      "type": "object",
+      "required": ["jsonrpc", "id", "method", "params"],
+      "properties": {
+        "jsonrpc": {"const": "2.0"}, "id": {"const": 2}, "method": {"const": "tools/call"},
+        "params": {
+          "type": "object", "required": ["name", "input"],
+          "additionalProperties": false,
+          "properties": {"name": {"type": "string"}, "input": {"type": "object"}}
+        }
+      }
+    },
+    "callRequestV1": {
+      "type": "object",
+      "required": ["jsonrpc", "id", "method", "params"],
+      "properties": {
+        "jsonrpc": {"const": "2.0"}, "id": {"const": 2}, "method": {"const": "tools/call"},
+        "params": {
+          "type": "object", "required": ["name", "input", "timeout_ms"],
+          "properties": {
+            "name": {"type": "string"}, "input": {"type": "object"},
+            "timeout_ms": {"type": "integer", "minimum": 1, "maximum": 10000}
+          }
+        }
+      }
+    },
+    "response": {
+      "type": "object",
+      "required": ["jsonrpc", "id"],
+      "properties": {
+        "jsonrpc": {"const": "2.0"},
+        "id": {"enum": [1, 2]},
+        "result": {"type": "object"},
+        "error": {
+          "type": "object", "required": ["code", "message"],
+          "properties": {"code": {"type": "integer"}, "message": {"type": "string"}}
+        }
+      },
+      "not": {"required": ["method"]},
+      "oneOf": [{"required": ["result"]}, {"required": ["error"]}]
+    }
+  },
+  "oneOf": [
+    {"$ref": "#/$defs/initRequest"},
+    {"$ref": "#/$defs/callRequestV0"},
+    {"$ref": "#/$defs/callRequestV1"},
+    {"$ref": "#/$defs/response"}
+  ]
+}

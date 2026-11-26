@@ -1,0 +1,440 @@
+//! Public plugin packages are immutable for the duration of a local grant.
+mod stdio;
+
+use crate::mcp::schema;
+use hypermesh_local_storage as storage;
+use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
+use std::{
+    collections::{HashMap, HashSet},
+    fmt, fs,
+    io::Read,
+    path::Path,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
+    time::Duration,
+};
+use uuid::Uuid;
+
+const HOST_VERSIONS: [u32; 2] = [1, 0];
+pub(crate) const MAX_READ_BYTES: u64 = 32 * 1024;
+const MAX_EXECUTABLE: u64 = 8 * 1024 * 1024;
+const MAX_GRANTS: usize = 16;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Error {
+    Package,
+    Incompatible,
+    InvalidInput,
+    InvalidOutput,
+    Unavailable,
+    Timeout,
+    Cancelled,
+    ToolFailed,
+    Denied,
+}
+
+impl Error {
+    pub fn code(self) -> &'static str {
+        match self {
+            Self::Package => "invalid_package",
+            Self::Incompatible => "incompatible_api",
+            Self::InvalidInput => "invalid_input",
+            Self::InvalidOutput => "invalid_output",
+            Self::Unavailable => "plugin_unavailable",
+            Self::Timeout => "plugin_timeout",
+            Self::Cancelled => "plugin_cancelled",
+            Self::ToolFailed => "tool_failed",
+            Self::Denied => "read_refused",
+        }
+    }
+}
+
+impl fmt::Display for Error {
+    fn fmt(&self, out: &mut fmt::Formatter<'_>) -> fmt::Result {
+        out.write_str(match self {
+            Self::Package => "Invalid plugin package or digest",
+            Self::Incompatible => "Plugin API incompatible. Use a package supporting API 1 or 0.",
+            Self::InvalidInput => "Input does not satisfy the declared tool schema",
+            Self::InvalidOutput => "Plugin response does not satisfy the public contract",
+            Self::Unavailable => "Plugin sandbox or process unavailable",
+            Self::Timeout => "Plugin exceeded its deadline",
+            Self::Cancelled => "Plugin invocation was cancelled or its grant ended",
+            Self::ToolFailed => "Plugin returned a tool error",
+            Self::Denied => "Workspace read admission was unavailable or refused",
+        })
+    }
+}
+impl std::error::Error for Error {}
+
+#[derive(Clone, Copy, Deserialize, Serialize)]
+#[serde(rename_all = "kebab-case")]
+enum Profile {
+    LocalStdio,
+    LocalMcpStdio,
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct Tool {
+    name: String,
+    scope: Scope,
+    input_schema: Value,
+    output_schema: Value,
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+enum Scope {
+    #[serde(rename = "workspace.read")]
+    WorkspaceRead,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Manifest {
+    manifest_version: u32,
+    id: String,
+    package_version: String,
+    api_versions: Vec<u32>,
+    profile: Profile,
+    executable_sha256: String,
+    tools: Vec<Tool>,
+}
+
+pub(crate) struct Package {
+    manifest: Manifest,
+    digest: String,
+    executable: Vec<u8>,
+    tool: Tool,
+    input: jsonschema::Validator,
+    output: jsonschema::Validator,
+    version: u32,
+}
+
+fn slug(text: &str) -> bool {
+    !text.is_empty()
+        && text.len() <= 63
+        && text.as_bytes()[0].is_ascii_lowercase()
+        && text
+            .as_bytes()
+            .last()
+            .is_some_and(u8::is_ascii_alphanumeric)
+        && text
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+}
+
+fn valid_id(value: &str) -> bool {
+    value.len() <= 127 && value.split('.').count() >= 3 && value.split('.').all(slug)
+}
+
+fn private_bytes(path: &Path, limit: u64) -> Result<Vec<u8>, Error> {
+    let file =
+        storage::open(path, storage::Open::Read { private: true }).map_err(|_| Error::Package)?;
+    let mut bytes = Vec::new();
+    file.take(limit + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|_| Error::Package)?;
+    if bytes.is_empty() || bytes.len() as u64 > limit {
+        return Err(Error::Package);
+    }
+    Ok(bytes)
+}
+
+impl Package {
+    pub(crate) fn load(path: &Path, expected: &str, tool: &str) -> Result<Self, Error> {
+        if !path.is_absolute()
+            || path.file_name() != Some("manifest.json".as_ref())
+            || !path
+                .parent()
+                .is_some_and(|parent| storage::check_dir(parent).is_ok())
+        {
+            return Err(Error::Package);
+        }
+        let raw = private_bytes(path, 64 * 1024)?;
+        let digest = format!("{:x}", Sha256::digest(&raw));
+        if digest != expected {
+            return Err(Error::Package);
+        }
+        let value: Value = serde_json::from_slice(&raw).map_err(|_| Error::Package)?;
+        let shape: Value =
+            serde_json::from_str(include_str!("../../plugins/schemas/manifest-v1.json"))
+                .map_err(|_| Error::Package)?;
+        let shape = schema::compile(&shape).map_err(|_| Error::Package)?;
+        schema::validate_compiled(&shape, &value).map_err(|_| Error::Package)?;
+        // Deserializing the original bytes also refuses duplicate manifest fields.
+        let manifest: Manifest = serde_json::from_slice(&raw).map_err(|_| Error::Package)?;
+        if manifest.manifest_version != 1 || !valid_id(&manifest.id) {
+            return Err(Error::Package);
+        }
+        let version = HOST_VERSIONS
+            .into_iter()
+            .find(|v| manifest.api_versions.contains(v))
+            .ok_or(Error::Incompatible)?;
+        let mut names = HashSet::new();
+        for entry in &manifest.tools {
+            if !slug(&entry.name) || !names.insert(&entry.name) {
+                return Err(Error::Package);
+            }
+        }
+        let tool = manifest
+            .tools
+            .iter()
+            .find(|entry| entry.name == tool)
+            .ok_or(Error::Package)?
+            .clone();
+        let input = schema::compile(&tool.input_schema).map_err(|_| Error::Package)?;
+        let output = schema::compile(&tool.output_schema).map_err(|_| Error::Package)?;
+        let executable = private_bytes(&path.with_file_name("plugin"), MAX_EXECUTABLE)?;
+        if !executable.starts_with(b"\x7fELF")
+            || format!("{:x}", Sha256::digest(&executable)) != manifest.executable_sha256
+        {
+            return Err(Error::Package);
+        }
+        Ok(Self {
+            manifest,
+            digest,
+            executable,
+            tool,
+            input,
+            output,
+            version,
+        })
+    }
+
+    fn key(&self) -> &str {
+        &self.manifest.id
+    }
+
+    fn metadata(&self) -> Value {
+        json!({
+            "id": self.manifest.id,
+            "package_version": self.manifest.package_version,
+            "manifest_sha256": self.digest,
+            "profile": self.manifest.profile,
+            "api_version": self.version,
+            "tool": self.tool,
+        })
+    }
+
+    pub(crate) async fn invoke(
+        &self,
+        staging: &Path,
+        input: Value,
+        limit: Duration,
+        live: impl Fn() -> bool,
+    ) -> Result<Value, Error> {
+        schema::validate_compiled(&self.input, &input).map_err(|_| Error::InvalidInput)?;
+        if !live() {
+            return Err(Error::Cancelled);
+        }
+        let call = stdio::invoke(self, staging, input, limit, &live);
+        tokio::pin!(call);
+        let mut check = tokio::time::interval(Duration::from_millis(20));
+        let deadline = tokio::time::sleep(limit);
+        tokio::pin!(deadline);
+        loop {
+            tokio::select! {
+                biased;
+                _ = &mut deadline => return Err(Error::Timeout),
+                _ = check.tick() => if !live() { return Err(Error::Cancelled); },
+                value = &mut call => {
+                    if !live() { return Err(Error::Cancelled); }
+                    let value = value?;
+                    schema::validate_compiled(&self.output, &value)
+                        .map_err(|_| Error::InvalidOutput)?;
+                    return Ok(value);
+                }
+            }
+        }
+    }
+}
+
+pub(crate) struct Grant {
+    pub package: Package,
+    pub target: String,
+    ended: AtomicBool,
+    running: AtomicBool,
+}
+
+impl Grant {
+    pub(crate) fn live(&self) -> bool {
+        !self.ended.load(Ordering::Acquire)
+    }
+
+    pub(crate) fn begin(self: &Arc<Self>) -> Option<Invocation> {
+        if !self.live() || self.running.swap(true, Ordering::AcqRel) {
+            return None;
+        }
+        Some(Invocation(Arc::clone(self)))
+    }
+}
+
+pub(crate) struct Invocation(Arc<Grant>);
+
+impl Drop for Invocation {
+    fn drop(&mut self) {
+        self.0.running.store(false, Ordering::Release);
+    }
+}
+
+#[derive(Default)]
+pub(crate) struct Grants(HashMap<(Uuid, String), Arc<Grant>>);
+
+impl Grants {
+    pub(crate) fn install(
+        &mut self,
+        session: Uuid,
+        package: Package,
+        target: String,
+    ) -> Option<Value> {
+        let key = (session, package.key().to_owned());
+        if self.0.len() >= MAX_GRANTS || self.0.contains_key(&key) {
+            return None;
+        }
+        let metadata = package.metadata();
+        self.0.insert(
+            key,
+            Arc::new(Grant {
+                package,
+                target,
+                ended: AtomicBool::new(false),
+                running: AtomicBool::new(false),
+            }),
+        );
+        Some(metadata)
+    }
+
+    pub(crate) fn get(&self, session: Uuid, plugin: &str) -> Option<Arc<Grant>> {
+        self.0.get(&(session, plugin.to_owned())).cloned()
+    }
+
+    pub(crate) fn list(&self, session: Uuid) -> Vec<Value> {
+        let mut entries: Vec<_> = self
+            .0
+            .iter()
+            .filter(|((id, _), _)| *id == session)
+            .collect();
+        entries.sort_unstable_by(|a, b| a.0 .1.cmp(&b.0 .1));
+        entries
+            .into_iter()
+            .map(|(_, grant)| grant.package.metadata())
+            .collect()
+    }
+
+    pub(crate) fn disable(&mut self, session: Uuid, plugin: &str) -> bool {
+        if let Some(grant) = self.0.remove(&(session, plugin.to_owned())) {
+            grant.ended.store(true, Ordering::Release);
+            return true;
+        }
+        false
+    }
+
+    pub(crate) fn close(&mut self, session: Uuid) {
+        self.0.retain(|(id, _), grant| {
+            if *id == session {
+                grant.ended.store(true, Ordering::Release);
+                return false;
+            }
+            true
+        });
+    }
+}
+
+/// Test a package in the production sandbox with caller-supplied fixture data.
+/// This entry point has no Visor session, workspace access, or policy credentials.
+pub async fn conformance(
+    manifest: &Path,
+    digest: &str,
+    tool: &str,
+    staging: &Path,
+    input: Value,
+) -> Result<Value, Error> {
+    storage::check_dir(staging).map_err(|_| Error::Package)?;
+    let package = Package::load(manifest, digest, tool)?;
+    let result = package
+        .invoke(staging, input, Duration::from_secs(5), || true)
+        .await?;
+    Ok(json!({"api_version": package.version, "result": result}))
+}
+
+fn stage_file(staging: &Path, bytes: &[u8]) -> Result<Staged, Error> {
+    use std::{io::Write, os::unix::fs::PermissionsExt};
+    storage::check_dir(staging).map_err(|_| Error::Unavailable)?;
+    let path = staging.join(format!("plugin-{}", Uuid::new_v4()));
+    let mut file = storage::open(&path, storage::Open::New).map_err(|_| Error::Unavailable)?;
+    let staged = Staged(path);
+    file.write_all(bytes).map_err(|_| Error::Unavailable)?;
+    file.set_permissions(fs::Permissions::from_mode(0o500))
+        .map_err(|_| Error::Unavailable)?;
+    Ok(staged)
+}
+
+struct Staged(std::path::PathBuf);
+impl Drop for Staged {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.0);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn public_wire_schema_distinguishes_protocol_versions_and_failure_envelopes() {
+        let shape =
+            serde_json::from_str(include_str!("../../plugins/schemas/stdio-v1.json")).unwrap();
+        let validator = schema::compile(&shape).unwrap();
+        let mut call = json!({"jsonrpc":"2.0", "id":2, "method":"tools/call",
+                              "params":{"name":"test","input":{}}});
+        assert!(validator.is_valid(&call));
+        call["params"]["timeout_ms"] = json!(1000);
+        assert!(validator.is_valid(&call));
+        call["params"]["timeout_ms"] = json!(0);
+        assert!(!validator.is_valid(&call));
+        assert!(validator.is_valid(&json!({
+            "jsonrpc":"2.0","id":2,"error":{"code":-32602,"message":"Invalid input"}
+        })));
+        assert!(!validator.is_valid(&json!({
+            "jsonrpc":"2.0","id":2,"result":{},"error":{"code":-32602,"message":"Invalid input"}
+        })));
+    }
+
+    #[test]
+    fn manifest_digest_and_declared_scope_are_checked_before_loading_executable() {
+        struct Temp(std::path::PathBuf);
+        impl Drop for Temp {
+            fn drop(&mut self) {
+                let _ = fs::remove_dir_all(&self.0);
+            }
+        }
+        let dir = Temp(std::env::temp_dir().join(format!("visor-plugin-{}", Uuid::new_v4())));
+        storage::create_dir(&dir.0).unwrap();
+        let file = dir.0.join("manifest.json");
+        let mut shape: Value = serde_json::from_str(include_str!(
+            "../../plugins/reference/manifest.template.json"
+        ))
+        .unwrap();
+        shape["executable_sha256"] = json!("0".repeat(64));
+        shape["tools"][0]["scope"] = json!("workspace.write");
+        let raw = shape.to_string();
+        use std::io::Write;
+        storage::open(&file, storage::Open::New)
+            .unwrap()
+            .write_all(raw.as_bytes())
+            .unwrap();
+        let digest = format!("{:x}", Sha256::digest(raw.as_bytes()));
+        assert!(matches!(
+            Package::load(&file, &digest, "count-bytes"),
+            Err(Error::Package)
+        ));
+        assert!(matches!(
+            Package::load(&file, "not a digest", "count-bytes"),
+            Err(Error::Package)
+        ));
+    }
+}

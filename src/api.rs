@@ -52,6 +52,8 @@ mod access_actions;
 mod acp_machine;
 mod coding_tasks;
 mod continue_tasks;
+#[cfg(target_os = "linux")]
+mod plugins;
 
 pub struct AppState {
     companions: std::sync::OnceLock<Arc<crate::companion_runtime::Runtime>>,
@@ -61,6 +63,8 @@ pub struct AppState {
     prompts_stopped: AtomicBool,
     host_bridge: Option<crate::host_bridge::Bridge>,
     tasks: tasks::Queue,
+    #[cfg(target_os = "linux")]
+    plugins: Mutex<crate::plugins::Grants>,
     coding_status: Mutex<serde_json::Value>,
     forum_publications: Mutex<HashMap<Uuid, remote_bot::Publication>>,
     forum_reporter_exchange: tokio::sync::Mutex<()>,
@@ -189,6 +193,8 @@ impl AppState {
             prompts_stopped: AtomicBool::new(false),
             host_bridge: None,
             tasks: tasks::Queue::new(),
+            #[cfg(target_os = "linux")]
+            plugins: Mutex::default(),
             coding_status: Mutex::new(serde_json::json!({})),
             forum_publications: Mutex::new(HashMap::new()),
             forum_reporter_exchange: tokio::sync::Mutex::new(()),
@@ -827,7 +833,10 @@ async fn reject_without_bearer(token: String, request: Request<Body>, next: Next
 struct CompanionLink(bool);
 
 fn routes(state: Arc<AppState>, from_companion: bool) -> Router {
-    Router::new()
+    let router = Router::new();
+    #[cfg(target_os = "linux")]
+    let router = router.merge(plugins::routes());
+    router
         .route("/capabilities", get(capabilities))
         .route("/host/capabilities", get(host::catalog))
         .route("/host/call", post(host::call))
@@ -2045,6 +2054,8 @@ async fn close_session(
         return Err(ApiError::missing());
     }
     state.tasks.close(id);
+    #[cfg(target_os = "linux")]
+    lock(&state.plugins).close(id);
     lock(&state.frames).remove(&id);
     lock(&state.automation).note_session_closed(id);
     let state2 = Arc::clone(&state);
@@ -3179,6 +3190,11 @@ impl IntoResponse for ApiError {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(target_os = "linux")]
+    mod plugin_contract {
+        include!("api/plugin_contract.rs");
+    }
+
     use super::*;
     use crate::desktop::pixels::encode_rgba_png;
     use crate::desktop::Frame;

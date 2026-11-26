@@ -19,7 +19,7 @@ fn bounded(value: &Value, depth: usize, remaining: &mut usize) -> bool {
     }
 }
 
-pub(super) fn compile(schema: &Value) -> Result<jsonschema::Validator, McpError> {
+pub(crate) fn compile(schema: &Value) -> Result<jsonschema::Validator, McpError> {
     if schema.to_string().len() > 64 * 1024 || !bounded(schema, 0, &mut 4096) {
         return Err(invalid());
     }
@@ -31,7 +31,7 @@ pub(super) fn compile(schema: &Value) -> Result<jsonschema::Validator, McpError>
         .map_err(|_| invalid())
 }
 
-pub(super) fn validate_compiled(validator: &jsonschema::Validator, instance: &Value) -> Result<(), McpError> {
+pub(crate) fn validate_compiled(validator: &jsonschema::Validator, instance: &Value) -> Result<(), McpError> {
     if instance.to_string().len() > 1024 * 1024 || !bounded(instance, 0, &mut 16384) {
         return Err(invalid());
     }

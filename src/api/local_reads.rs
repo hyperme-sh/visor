@@ -37,10 +37,20 @@ fn execute(
             && state.has_session(session)
             && consent.matches(&lock(&state.automation))
     };
+    authorized_read(&state, body, valid, rt).map(reads::ReadOutcome::response)
+}
+
+#[cfg(unix)]
+pub(super) fn authorized_read(
+    state: &AppState,
+    body: ReadRequest,
+    valid: impl Fn() -> bool,
+    rt: tokio::runtime::Handle,
+) -> Result<reads::ReadOutcome, &'static str> {
     if !valid() {
         return Err(reads::ERROR);
     }
-    let dir = directory(&state)?;
+    let dir = directory(state)?;
     let bridge = state.host_bridge.as_ref().ok_or(reads::ERROR)?;
     let context = rt
         .block_on(bridge.machine_context())
@@ -59,7 +69,7 @@ fn execute(
     .map(|k| (k.to_owned(), context["identity"][k].clone()))
     .collect::<serde_json::Map<String, Value>>()
     .into();
-    reads::perform(
+    reads::perform_bytes(
         &dir,
         body,
         &identity,

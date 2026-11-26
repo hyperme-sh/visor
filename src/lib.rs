@@ -45,6 +45,8 @@ mod session_destinations;
 mod native_prompt;
 mod mcp;
 mod orchestrator;
+#[cfg(target_os = "linux")]
+pub mod plugins;
 mod prompt;
 pub mod permission_templates;
 pub mod local_reads;

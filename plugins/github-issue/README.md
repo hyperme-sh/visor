@@ -25,6 +25,7 @@ worker can use its standard I/O pipes and memory. Visor handles provider
 requests, which require explicit GitHub egress for live reads. CI exercises
 both native images under the standard network-free Compose profile using a
 loopback provider fixture and an empty user plugin store.
+For live container reads, see the [opt-in GitHub relay](../../container/README.md#opt-in-to-live-github-issue-reads).
 
 ## Build and install a standalone copy
 

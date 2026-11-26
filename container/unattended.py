@@ -61,7 +61,7 @@ class Connection(http.client.HTTPConnection):
         self.path = '/run/visor/hypermesh/' + ('companion.sock' if companion else 'control.sock')
     def connect(self):
         self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        self.sock.settimeout(2)
+        self.sock.settimeout(self.timeout)
         self.sock.connect(self.path)
 
 

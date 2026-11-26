@@ -67,6 +67,8 @@ pub struct AppState {
     plugins: Mutex<crate::plugins::Grants>,
     #[cfg(target_os = "linux")]
     plugin_store: Mutex<Option<crate::plugins::store::Store>>,
+    #[cfg(target_os = "linux")]
+    github_code_audit: Mutex<std::collections::VecDeque<plugins::CodeAuditEntry>>,
     #[cfg(all(test, target_os = "linux"))]
     github_fixture: Option<std::net::SocketAddr>,
     coding_status: Mutex<serde_json::Value>,
@@ -201,6 +203,8 @@ impl AppState {
             plugins: Mutex::default(),
             #[cfg(target_os = "linux")]
             plugin_store: Mutex::default(),
+            #[cfg(target_os = "linux")]
+            github_code_audit: Mutex::default(),
             #[cfg(all(test, target_os = "linux"))]
             github_fixture: None,
             coding_status: Mutex::new(serde_json::json!({})),

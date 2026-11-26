@@ -1,5 +1,7 @@
 //! Plugin control stays on the same private companion transport as workspace reads.
 mod github;
+mod github_code;
+pub(super) use github_code::CodeAuditEntry;
 
 use super::*;
 use crate::{local_reads as reads, plugins as plugin};
@@ -23,6 +25,12 @@ pub(super) fn routes() -> Router<Arc<AppState>> {
         .route(
             "/session/:id/plugins/:plugin/github-issue",
             get(github::status).post(github::read),
+        )
+        .route(
+            "/session/:id/plugins/:plugin/github-issue/code",
+            get(github_code::audit)
+                .post(github_code::run)
+                .layer(axum::extract::DefaultBodyLimit::max(64 * 1024)),
         )
 }
 
@@ -228,6 +236,8 @@ struct InstalledEnable {
     revision: Uuid,
     tool: String,
     target: plugin::Target,
+    #[serde(default)]
+    code_mode: bool,
 }
 
 async fn enable(
@@ -247,7 +257,7 @@ async fn enable(
     let result = tokio::task::spawn_blocking(move || {
         let _permit = permit;
         with_store(&state, |store| {
-            let (package, target, publisher) = match body {
+            let (package, target, publisher, code_mode) = match body {
                 Enable::Local(body) => {
                     if !matches!(body.target, plugin::Target::Workspace(_)) {
                         return Ok(ApiError::bad(
@@ -260,7 +270,7 @@ async fn enable(
                     if store.get(package.key())?.is_some() {
                         return Err(PublicationError::Changed);
                     }
-                    (package, body.target, None)
+                    (package, body.target, None, false)
                 }
                 Enable::Installed(body) => (
                     store.activate(&body.plugin_id, body.revision, &body.tool)?,
@@ -268,10 +278,19 @@ async fn enable(
                     store
                         .get(&body.plugin_id)?
                         .map(|entry| entry.metadata.publisher),
+                    body.code_mode,
                 ),
             };
             if !package.allows(&target) {
                 return Ok(ApiError::bad("Plugin scope does not cover this target").into_response());
+            }
+            if code_mode
+                && (package.key() != "dev.visor.github-issue"
+                    || !matches!(target, plugin::Target::GitHub(_)))
+            {
+                return Ok(
+                    ApiError::bad("Code Mode requires the GitHub issue pilot").into_response()
+                );
             }
             // Keep membership and the installed revision stable until insertion.
             let sessions = lock(&state.sessions);
@@ -288,7 +307,7 @@ async fn enable(
             } else {
                 None
             };
-            let mut metadata = lock(&state.plugins).install(id, package, target);
+            let mut metadata = lock(&state.plugins).install(id, package, target, code_mode);
             if let (Some(metadata), Some(access)) = (&mut metadata, access) {
                 metadata["publisher"] = json!(publisher);
                 metadata["access"] = access;

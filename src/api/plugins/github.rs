@@ -46,15 +46,18 @@ pub(super) async fn status(
             } else {
                 "active"
             };
-            Ok(Json(json!({
+            let mut summary = json!({
                 "id":plugin_id,
                 "package_version":entry.metadata.package_version,
                 "publisher":entry.metadata.publisher,
                 "state":status,
                 "access":access.filter(|_| status == "active")
                     .map(|selection| json!({"scope":"github.issue.read","target":selection}))
-            }))
-            .into_response())
+            });
+            if grant.as_ref().is_some_and(|grant| grant.code_mode) {
+                summary["code_mode"] = json!(status == "active");
+            }
+            Ok(Json(summary).into_response())
         })
     })
     .await)
@@ -88,84 +91,145 @@ pub(super) async fn read(
             "Plugin grant does not cover this account and repository",
         ));
     }
-    let selected = selected.clone();
-    let consent = tasks::Consent::capture(&lock(&state.automation), id);
-    if !consent.matches(&lock(&state.automation)) {
-        return Err(ApiError::forbidden("Plugin requires current local consent"));
-    }
-    let token = lock(&state.sessions)
-        .get(&id)
-        .and_then(credential)
-        .ok_or_else(|| ApiError::forbidden("GitHub issue credential unavailable"))?;
-    let permit = PROVIDER_CALLS
-        .try_acquire()
-        .map_err(|_| ApiError::unavailable("GitHub issue workers busy"))?;
-    let invocation = grant
-        .begin()
-        .ok_or_else(|| ApiError::conflict("Plugin busy or disabled"))?;
-    let control = Arc::new(Control {
-        grant,
-        state,
-        consent,
-        cancelled: AtomicBool::new(false),
-    });
-    let _cancel = Cancel(Arc::clone(&control));
-    let deadline = Instant::now() + LIMIT;
-    let worker = Arc::clone(&control);
-    let mut fetch = tokio::task::spawn_blocking(move || {
-        let live = || Instant::now() < deadline && worker.live();
-        #[cfg(test)]
-        if let Some(address) = worker.state.github_fixture {
-            let result =
-                provider::fixture_read(address, &selected, &body.target, body.number, &token, live);
-            return (result, permit, invocation);
-        }
-        let result = provider::read(&selected, &body.target, body.number, &token, live);
-        (result, permit, invocation)
-    });
-    let mut tick = tokio::time::interval(Duration::from_millis(20));
-    let (result, _permit, _invocation) = loop {
-        tokio::select! {
-            biased;
-            _ = tick.tick() => {
-                if !control.live() {
-                    return Ok(failure(provider::Error::Cancelled));
-                }
-                if Instant::now() >= deadline {
-                    return Ok(failure(provider::Error::Unavailable));
-                }
-            }
-            result = &mut fetch => break result.map_err(|_| ApiError::unavailable("GitHub issue read unavailable"))?,
-        }
-    };
-    let issue = match result {
-        Ok(issue) => issue,
-        Err(failed) => {
-            if failed == provider::Error::Revoked {
-                let mut grants = lock(&control.state.plugins);
-                if grants
-                    .get(id, &plugin_id)
-                    .is_some_and(|grant| Arc::ptr_eq(&grant, &control.grant))
-                {
-                    grants.disable(id, &plugin_id);
-                }
-            }
-            return Ok(failure(failed));
-        }
-    };
-    let staging = control.state.mcp_dir.join("plugin-scratch");
-    let result = run_package(&control, &staging, json!({"issue":issue}), deadline, || {
-        control.live()
-    })
-    .await;
-    Ok(match result {
-        Ok(result) if result == issue => response(StatusCode::OK, json!({"result":result})),
-        Ok(_) => response(StatusCode::BAD_GATEWAY, error(plugin::Error::InvalidOutput)),
-        Err(failed) => response(StatusCode::SERVICE_UNAVAILABLE, error(failed)),
-    })
+    let broker = Broker::open(state, id, grant)?;
+    Ok(
+        match broker.read(body.number, Instant::now() + LIMIT).await {
+            Ok(issue) => response(StatusCode::OK, json!({"result": issue})),
+            Err(error) => error,
+        },
+    )
 }
 
-fn response(status: StatusCode, body: Value) -> Response {
+pub(super) struct Broker {
+    control: Arc<Control>,
+    selected: Selection,
+    invocation: Arc<plugin::Invocation>,
+    _cancel: Cancel,
+}
+
+impl Broker {
+    pub(super) fn open(
+        state: Arc<AppState>,
+        id: Uuid,
+        grant: Arc<plugin::Grant>,
+    ) -> Result<Self, ApiError> {
+        let plugin::Target::GitHub(selected) = &grant.target else {
+            return Err(ApiError::forbidden(
+                "Plugin grant does not cover GitHub issue reads",
+            ));
+        };
+        let selected = selected.clone();
+        let consent = tasks::Consent::capture(&lock(&state.automation), id);
+        if !consent.matches(&lock(&state.automation)) {
+            return Err(ApiError::forbidden("Plugin requires current local consent"));
+        }
+        let invocation = grant
+            .begin()
+            .ok_or_else(|| ApiError::conflict("Plugin busy or disabled"))?;
+        let control = Arc::new(Control {
+            grant,
+            state,
+            consent,
+            cancelled: AtomicBool::new(false),
+        });
+        Ok(Self {
+            _cancel: Cancel(Arc::clone(&control)),
+            control,
+            selected,
+            invocation: Arc::new(invocation),
+        })
+    }
+
+    pub(super) fn live(&self) -> bool {
+        self.control.live()
+    }
+
+    pub(super) async fn read(&self, number: u64, run_deadline: Instant) -> Result<Value, Response> {
+        if !self.live() {
+            return Err(failure(provider::Error::Cancelled));
+        }
+        let deadline = run_deadline.min(Instant::now() + LIMIT);
+        if Instant::now() >= deadline {
+            return Err(failure(provider::Error::Unavailable));
+        }
+        let control = &self.control;
+        let id = control.consent.session;
+        let token = lock(&control.state.sessions)
+            .get(&id)
+            .and_then(credential)
+            .ok_or_else(|| {
+                ApiError::forbidden("GitHub issue credential unavailable").into_response()
+            })?;
+        let permit = PROVIDER_CALLS
+            .try_acquire()
+            .map_err(|_| ApiError::unavailable("GitHub issue workers busy").into_response())?;
+        let worker = Arc::clone(control);
+        let invocation = Arc::clone(&self.invocation);
+        let selected = self.selected.clone();
+        let mut fetch = tokio::task::spawn_blocking(move || {
+            let live = || Instant::now() < deadline && worker.live();
+            let read = || provider::read(&selected, &selected, number, &token, live);
+            #[cfg(test)]
+            let result = match worker.state.github_fixture {
+                Some(address) => {
+                    provider::fixture_read(address, &selected, &selected, number, &token, live)
+                }
+                None => read(),
+            };
+            #[cfg(not(test))]
+            let result = read();
+            (result, permit, invocation)
+        });
+        let mut tick = tokio::time::interval(Duration::from_millis(20));
+        let (result, _permit, _invocation) = loop {
+            tokio::select! {
+                biased;
+                _ = tick.tick() => {
+                    if !control.live() {
+                        return Err(failure(provider::Error::Cancelled));
+                    }
+                    if Instant::now() >= deadline {
+                        return Err(failure(provider::Error::Unavailable));
+                    }
+                }
+                result = &mut fetch => break result.map_err(|_| {
+                    ApiError::unavailable("GitHub issue read unavailable").into_response()
+                })?,
+            }
+        };
+        let issue = match result {
+            Ok(issue) => issue,
+            Err(failed) => {
+                if failed == provider::Error::Revoked {
+                    let mut grants = lock(&control.state.plugins);
+                    let plugin_id = control.grant.package.key();
+                    if grants
+                        .get(id, plugin_id)
+                        .is_some_and(|grant| Arc::ptr_eq(&grant, &control.grant))
+                    {
+                        grants.disable(id, plugin_id);
+                    }
+                }
+                return Err(failure(failed));
+            }
+        };
+        let staging = control.state.mcp_dir.join("plugin-scratch");
+        let result = run_package(control, &staging, json!({"issue":issue}), deadline, || {
+            control.live()
+        })
+        .await;
+        match result {
+            Ok(result) if result == issue => Ok(result),
+            Ok(_) => Err(response(
+                StatusCode::BAD_GATEWAY,
+                error(plugin::Error::InvalidOutput),
+            )),
+            Err(failed) => Err(response(StatusCode::SERVICE_UNAVAILABLE, error(failed))),
+        }
+    }
+}
+
+pub(super) fn response(status: StatusCode, body: Value) -> Response {
     (status, [(header::CACHE_CONTROL, "no-store")], Json(body)).into_response()
 }
 

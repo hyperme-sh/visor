@@ -9,19 +9,19 @@ use std::{
 };
 use tokio::{
     io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
-    process::{ChildStdin, ChildStdout, Command},
+    process::{Child, ChildStdin, ChildStdout, Command},
 };
 
 const MAX_FRAME: usize = 96 * 1024;
 const BWRAP: &str = "/usr/bin/bwrap";
 
-struct Channel {
+pub(crate) struct Channel {
     stdin: ChildStdin,
     stdout: BufReader<ChildStdout>,
 }
 
 impl Channel {
-    async fn send(&mut self, frame: &Value) -> Result<(), Error> {
+    pub(crate) async fn send(&mut self, frame: &Value) -> Result<(), Error> {
         let mut raw = serde_json::to_vec(frame).map_err(|_| Error::InvalidInput)?;
         raw.push(b'\n');
         if raw.len() > MAX_FRAME {
@@ -36,6 +36,12 @@ impl Channel {
     async fn request(&mut self, id: u32, method: &str, params: Value) -> Result<Value, Error> {
         self.send(&json!({"jsonrpc":"2.0","id":id,"method":method,"params":params}))
             .await?;
+        let value = self.receive().await?;
+        protocol::validate_response(&value, &json!(id)).map_err(|_| Error::InvalidOutput)?;
+        Ok(value)
+    }
+
+    pub(crate) async fn receive(&mut self) -> Result<Value, Error> {
         let mut raw = Vec::new();
         (&mut self.stdout)
             .take(MAX_FRAME as u64 + 1)
@@ -48,9 +54,7 @@ impl Channel {
         if raw.len() > MAX_FRAME || raw.last() != Some(&b'\n') {
             return Err(Error::InvalidOutput);
         }
-        let value: Value = serde_json::from_slice(&raw).map_err(|_| Error::InvalidOutput)?;
-        protocol::validate_response(&value, &json!(id)).map_err(|_| Error::InvalidOutput)?;
-        Ok(value)
+        serde_json::from_slice(&raw).map_err(|_| Error::InvalidOutput)
     }
 }
 
@@ -137,6 +141,25 @@ pub(crate) fn sandbox_command(
         });
     }
     command
+}
+
+pub(crate) async fn start_code(
+    package: &Package,
+    staging: &Path,
+) -> Result<(Child, Channel, super::Staged), Error> {
+    let staging = staging.to_owned();
+    let bytes = package.executable.clone();
+    let executable = tokio::task::spawn_blocking(move || prepare(&staging, &bytes))
+        .await
+        .map_err(|_| Error::Unavailable)??;
+    let mut child = sandbox_command(&executable.0, &[], &["--code-mode-v1"])
+        .spawn()
+        .map_err(|_| Error::Unavailable)?;
+    let channel = Channel {
+        stdin: child.stdin.take().ok_or(Error::Unavailable)?,
+        stdout: BufReader::new(child.stdout.take().ok_or(Error::Unavailable)?),
+    };
+    Ok((child, channel, executable))
 }
 
 pub(super) async fn invoke(

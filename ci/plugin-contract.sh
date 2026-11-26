@@ -94,7 +94,7 @@ VISOR_PLUGIN_PUBLICATION="$scratch/author.visor-plugin" VISOR_PLUGIN_CONTRACT_DI
 (
     cd "$scratch/author/github-issue"
     CARGO_TARGET_DIR="$scratch/build" RUSTFLAGS='-C target-feature=+crt-static' \
-        cargo build --release --locked --offline --target "$target"
+        cargo build --release --locked --target "$target"
 )
 mkdir "$scratch/github-issue"
 install -m 600 "$scratch/build/$target/release/visor-github-issue" "$scratch/github-issue/plugin"
@@ -112,4 +112,4 @@ PYTHON
 "$repo/target/debug/hypermesh-plugin-publish" "$scratch/github-issue" \
     https://packages.example.org/github-issue.visor-plugin < "$scratch/author-key.der" > "$scratch/github-issue.visor-plugin"
 VISOR_GITHUB_ISSUE_PUBLICATION="$scratch/github-issue.visor-plugin" cargo test --locked --no-default-features --features headless --lib \
-    api::tests::plugin_contract::github_issue_plugin_uses_the_selected_account_and_public_repository -- --ignored --exact
+    api::tests::plugin_contract::github_issue_plugin_uses_the_selected_account_and_public_repository -- --ignored --exact --nocapture

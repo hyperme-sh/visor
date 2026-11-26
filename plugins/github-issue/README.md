@@ -7,8 +7,10 @@ before granting access. A local author build has a community publisher.
 
 ## Build and install
 
-Build the package from this directory. Put the executable and manifest in a
-private package directory. Sign and install it using the
+Build the package from this directory with Rust 1.87 or later and a C compiler.
+Put the executable and manifest in a private package directory. The executable
+prints the bundled license notices with `--third-party-notices`. Sign and
+install it using the
 [plugin distribution guide](../distribution.md).
 
 ```sh
@@ -53,6 +55,49 @@ and canonical URLs. The sandboxed plugin receives the issue ID, number, URL,
 state, title, and optional body. Title and body are bounded to 256 and 4,096
 characters. Treat the text as untrusted context. The CLI reports a revoked
 credential or an unavailable provider as a distinct error.
+
+## Run JavaScript with Code Mode
+
+Enable Code Mode explicitly when granting an installed package that supports it.
+Revoke an existing direct-only grant before enabling a new grant.
+
+```sh
+hypermesh-visor github-issue enable SESSION dev.visor.github-issue REVISION ACCOUNT OWNER/REPO --code-mode
+hypermesh-visor github-issue code SESSION dev.visor.github-issue linked-issues.js
+hypermesh-visor github-issue code-audit SESSION dev.visor.github-issue
+```
+
+Pass `-` as the file to read UTF-8 JavaScript from stdin. The script is the body
+of a synchronous function. It can call `github.issue.read(number)` and return
+JSON. Each call reads from the account and repository in the original grant.
+For example, `linked-issues.js` can follow a same-repository reference in an
+issue body.
+
+```js
+const first = github.issue.read(42);
+const match = first.body?.match(/\bsee #([1-9]\d*)\b/i);
+const issues = match ? [first, github.issue.read(Number(match[1]))] : [first];
+return issues.map(({ number, title, state }) => ({ number, title, state }));
+```
+
+Visor checks the live session, original grant, local consent, GitHub account,
+and repository visibility on each read. A refused read ends the run. Closing
+the session, pausing automation, or revoking the grant stops the run. The
+existing Linux plugin sandbox isolates the JavaScript process. All provider
+requests and credentials stay in Visor. Code Mode accepts up to 8 KiB of source,
+four issue reads, 16 KiB of JSON output, and 15 seconds per run.
+
+On the owner-only companion socket, set `"code_mode":true` in the installed
+plugin grant request. Post `{"code":"return github.issue.read(42);"}` to
+`/session/{session}/plugins/{id}/github-issue/code`. The result includes the
+returned JSON, run ID, and count of issue reads. A GET on that route returns
+the session's recent call outcomes. Audit entries contain the run ID, call
+number, tool name, and outcome.
+
+The headless CI plugin contract compares direct calls and Code Mode against the
+same fixture. It checks matching results and provider authorization, and
+reports tool turns, response bytes, a four-bytes-per-token estimate, and
+elapsed time. The fixture uses no model provider or GitHub account.
 
 ## Public scope
 

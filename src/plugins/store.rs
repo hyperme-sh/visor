@@ -167,7 +167,9 @@ impl Store {
             if entry.revision != revision {
                 return Err(Error::Changed);
             }
-            return Publication::installed(archive.clone(), &entry.metadata, tool);
+            let mut package = Publication::installed(archive.clone(), &entry.metadata, tool)?;
+            package.bundled = true;
+            return Ok(package);
         };
         if entry.revision != revision {
             return Err(Error::Changed);

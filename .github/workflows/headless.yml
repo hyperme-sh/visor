@@ -2,6 +2,11 @@ name: headless unit and build contracts
 on:
   workflow_call:
   workflow_dispatch:
+    inputs:
+      published_plugin_index:
+        description: "Published Visor TEST OCI index digest for the container plugin contract"
+        type: string
+        required: false
   pull_request:
   push:
     branches: [main]
@@ -12,6 +17,7 @@ permissions:
   contents: read
 jobs:
   glibc:
+    if: github.event_name != 'workflow_dispatch' || !inputs.published_plugin_index
     strategy:
       fail-fast: false
       matrix:
@@ -68,6 +74,7 @@ jobs:
           retention-days: 1
           if-no-files-found: error
   musl:
+    if: github.event_name != 'workflow_dispatch' || !inputs.published_plugin_index
     strategy:
       fail-fast: false
       matrix:
@@ -117,3 +124,27 @@ jobs:
           path: ${{ runner.temp }}/headless/
           retention-days: 1
           if-no-files-found: error
+
+  published-container-plugin:
+    if: github.event_name == 'workflow_dispatch' && inputs.published_plugin_index
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            arch: amd64
+          - runner: ubuntu-24.04-arm
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 18
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
+      - name: Run bundled plugin inside published TEST with standard Compose settings
+        env:
+          PUBLISHED_TEST_INDEX: ${{ inputs.published_plugin_index }}
+          EXPECTED_ARCH: ${{ matrix.arch }}
+        run: bash ci/container/published-github-issue-contract.sh

@@ -169,3 +169,19 @@ On success the command writes the task, artifact and revision IDs. If a
 connection fails before the result arrives, submit the identical draft with
 the same IDs and Plane task. To change the draft after it is accepted, use
 the next authorized proposal.
+
+### Squad MCP adapter contract
+
+The [existing Squad adapter](https://github.com/FyberLabs/s3r.ch/blob/master/docs/squad-agent-client.md)
+can call the Visor commands as argument arrays. Bind the Squad origin, forum,
+agent, and active Plane task from the worker's trusted configuration. Supply
+the current enrolled agent bearer to `squad-resume` on stdin. For
+`squad-publish`, supply only the unsigned artifact JSON on stdin and run on
+the machine and user account that own the active Visor control socket.
+Both commands write JSON on success. Treat a nonzero exit as a refused or
+unconfirmed tool call. Keep credentials out of tool arguments and results.
+
+Visor's package CI runs two synthetic partner drafts through the packaged
+Conductor with a scripted model provider and checks their publication
+contract through the packaged CLI. The shared CI registration and enrolled
+worker fixtures are tracked in [Infra #3543](https://github.com/FyberLabs/infra/issues/3543).

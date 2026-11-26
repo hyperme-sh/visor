@@ -302,6 +302,7 @@ where
                      [--route CATALOG=URL] [--experts CATALOG] [--expert-answer CATALOG=URL]\n\
                      hypermesh-visor squad-resume HTTPS_ORIGIN FORUM PLANE_TASK_ID AGENT [CURSOR SQUAD_TASK_ID]\n\
                      Use --sources BRIEF_REVISION WORKBOOK_REVISION after cursor zero and the Squad task ID.\n\
+                     Add --preview-base PREVIEW_REVISION to verify the current preview revision.\n\
                      On Unix, hypermesh-visor squad-publish PLANE_TASK_ID reads an unsigned artifact from stdin.\n\
                      The control API listens on control.sock in the runtime directory.\n\
                      --tcp or HYPERMESH_TCP=1 also opens a loopback port. Every request on that\n\

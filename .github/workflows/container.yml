@@ -55,8 +55,10 @@ jobs:
           test "$(uname -m)" = "$EXPECTED_MACHINE"
           docker build --file container/Dockerfile --label "org.opencontainers.image.revision=$SOURCE_REVISION" --label "org.opencontainers.image.source=https://github.com/$SOURCE_REPOSITORY" --tag visor-container:ci .
       - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
-      - name: Verify bundled GitHub issue plugin and Code Mode grant
-        run: bash ci/container/github-issue-bundle-contract.sh visor-container:ci
+      - name: Verify bundled GitHub issue plugin and Code Mode in standard Compose
+        env:
+          EXPECTED_ARCH: ${{ matrix.arch }}
+        run: bash ci/container/published-github-issue-contract.sh visor-container:ci
       - name: Export archive and verify image contract
         env:
           ARCH: ${{ matrix.arch }}

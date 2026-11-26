@@ -34,23 +34,20 @@ def expect(status, method, path, value=None, companion=True):
     return body
 
 
-def sandbox_diagnostic():
-    # Bubblewrap's stderr is deliberately private in the daemon. Reapply the
-    # same sandbox launch to the public bundled binary only, in this container.
+def probe_sandbox():
     with tempfile.TemporaryDirectory(prefix="visor-plugin-probe-") as folder:
         executable = Path(folder) / "plugin"
         executable.write_bytes(base64.b64decode(json.loads(BUNDLE.read_bytes())["executable"], validate=True))
         executable.chmod(0o500)
-        result = subprocess.run([
-            "/usr/bin/bwrap", "--unshare-all", "--unshare-user", "--disable-userns",
-            "--die-with-parent", "--new-session", "--clearenv", "--cap-drop", "ALL",
-            "--ro-bind", str(executable), "/plugin", "--remount-ro", "/", "--chdir", "/",
-            "--", "/plugin", "--third-party-notices",
-        ], text=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, timeout=10)
-        print(f"Bubblewrap exit {result.returncode}    {result.stderr.strip()}", flush=True)
-    for line in Path("/proc/self/status").read_text().splitlines():
-        if line.startswith(("CapEff:", "NoNewPrivs:", "Seccomp:")):
-            print(line, flush=True)
+        result = subprocess.run(
+            [str(executable), "--sandbox-v1", "--sandbox-probe-v1"],
+            stdin=subprocess.DEVNULL, text=True, capture_output=True, timeout=10,
+        )
+        assert result.returncode == 0, result.stderr
+        assert [json.loads(line) for line in result.stdout.splitlines()] == [
+            {"sandbox": 1}, {"confined": True},
+        ]
+    print("Bundled worker blocked file access, sockets, and child processes.", flush=True)
 
 
 assert not USER_PACKAGE.exists()
@@ -85,9 +82,8 @@ try:
     expect(201, "POST", grants, {**grant, "code_mode": True})
     status, result = request("POST", code_path, script)
     print(f"Opted-in Code Mode returned HTTP {status}    {json.dumps(result)}", flush=True)
-    if status != 200:
-        sandbox_diagnostic()
-        raise SystemExit(1)
+    probe_sandbox()
+    assert status == 200, result
     assert result["result"] == 42 and result["calls"] == 0
     assert not USER_PACKAGE.exists()
 finally:

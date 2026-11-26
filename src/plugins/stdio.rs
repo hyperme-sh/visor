@@ -70,8 +70,14 @@ pub(crate) fn check_sandbox() -> Result<(), Error> {
     Ok(())
 }
 
-fn prepare(staging: &Path, bytes: &[u8]) -> Result<super::Staged, Error> {
-    check_sandbox()?;
+fn prepare(staging: &Path, bytes: &[u8], bundled: bool) -> Result<super::Staged, Error> {
+    if bundled {
+        if unsafe { libc::geteuid() } == 0 {
+            return Err(Error::Unavailable);
+        }
+    } else {
+        check_sandbox()?;
+    }
     stage_file(staging, bytes)
 }
 
@@ -82,7 +88,6 @@ pub(crate) fn sandbox_command(
 ) -> Command {
     let mut command = Command::new(BWRAP);
     command
-        .env_clear()
         .args([
             "--unshare-all",
             "--unshare-user",
@@ -101,7 +106,15 @@ pub(crate) fn sandbox_command(
     }
     command
         .args(["--remount-ro", "/", "--chdir", "/", "--", "/plugin"])
-        .args(arguments)
+        .args(arguments);
+    configure_worker(&mut command);
+    command
+}
+
+fn configure_worker(command: &mut Command) {
+    command
+        .env_clear()
+        .current_dir("/")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -140,7 +153,31 @@ pub(crate) fn sandbox_command(
             Ok(())
         });
     }
-    command
+}
+
+async fn launch(
+    executable: &Path,
+    arguments: &[&str],
+    bundled: bool,
+) -> Result<(Child, Channel), Error> {
+    let mut command = if bundled {
+        let mut command = Command::new(executable);
+        configure_worker(&mut command);
+        command.arg("--sandbox-v1").args(arguments);
+        command
+    } else {
+        sandbox_command(executable, &[], arguments)
+    };
+    let mut child = command.spawn().map_err(|_| Error::Unavailable)?;
+    let mut channel = Channel {
+        stdin: child.stdin.take().ok_or(Error::Unavailable)?,
+        stdout: BufReader::new(child.stdout.take().ok_or(Error::Unavailable)?),
+    };
+    // The image-owned worker installs its filter before accepting a frame.
+    if bundled && channel.receive().await? != json!({"sandbox": 1}) {
+        return Err(Error::Incompatible);
+    }
+    Ok((child, channel))
 }
 
 pub(crate) async fn start_code(
@@ -149,19 +186,14 @@ pub(crate) async fn start_code(
 ) -> Result<(Child, Channel, super::Staged), Error> {
     let staging = staging.to_owned();
     let bytes = package.executable.clone();
+    let bundled = package.bundled;
     let executable = tokio::task::spawn_blocking(move || {
         hypermesh_local_storage::create_dir(&staging).map_err(|_| Error::Unavailable)?;
-        prepare(&staging, &bytes)
+        prepare(&staging, &bytes, bundled)
     })
     .await
     .map_err(|_| Error::Unavailable)??;
-    let mut child = sandbox_command(&executable.0, &[], &["--code-mode-v1"])
-        .spawn()
-        .map_err(|_| Error::Unavailable)?;
-    let channel = Channel {
-        stdin: child.stdin.take().ok_or(Error::Unavailable)?,
-        stdout: BufReader::new(child.stdout.take().ok_or(Error::Unavailable)?),
-    };
+    let (child, channel) = launch(&executable.0, &["--code-mode-v1"], bundled).await?;
     Ok((child, channel, executable))
 }
 
@@ -175,18 +207,14 @@ pub(super) async fn invoke(
     let started = Instant::now();
     let staging = staging.to_owned();
     let bytes = package.executable.clone();
-    let executable = tokio::task::spawn_blocking(move || prepare(&staging, &bytes))
+    let bundled = package.bundled;
+    let executable = tokio::task::spawn_blocking(move || prepare(&staging, &bytes, bundled))
         .await
         .map_err(|_| Error::Unavailable)??;
     if !live() {
         return Err(Error::Cancelled);
     }
-    let mut command = sandbox_command(&executable.0, &[], &[]);
-    let mut child = command.spawn().map_err(|_| Error::Unavailable)?;
-    let mut channel = Channel {
-        stdin: child.stdin.take().ok_or(Error::Unavailable)?,
-        stdout: BufReader::new(child.stdout.take().ok_or(Error::Unavailable)?),
-    };
+    let (mut child, mut channel) = launch(&executable.0, &[], bundled).await?;
     let response = match package.manifest.profile {
         Profile::LocalStdio => {
             // Offer the highest common version first. No silent downgrade on handshake failure.
@@ -262,7 +290,7 @@ pub(super) async fn invoke(
                 .ok_or(Error::InvalidOutput)
         }
     };
-    // Closing the sandbox leader kills the PID namespace and its descendants.
+    // Finish the worker even when the caller is no longer reading.
     let _ = child.start_kill();
     response
 }

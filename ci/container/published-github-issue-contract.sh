@@ -1,12 +1,17 @@
 #!/usr/bin/env bash
 set -euo pipefail
-[[ "$PUBLISHED_TEST_INDEX" =~ ^sha256:[a-f0-9]{64}$ ]]
 case "$EXPECTED_ARCH" in
     amd64) test "$(uname -m)" = x86_64 ;;
     arm64) test "$(uname -m)" = aarch64 ;;
     *) exit 2 ;;
 esac
-export VISOR_IMAGE="ghcr.io/hyperme-sh/hypermesh-visor@$PUBLISHED_TEST_INDEX"
+if [[ $# == 1 && "$1" == visor-container:ci ]]; then
+    export VISOR_IMAGE="$1"
+else
+    [[ "$PUBLISHED_TEST_INDEX" =~ ^sha256:[a-f0-9]{64}$ ]]
+    export VISOR_IMAGE="ghcr.io/hyperme-sh/hypermesh-visor@$PUBLISHED_TEST_INDEX"
+    docker pull "$VISOR_IMAGE"
+fi
 compose=(docker compose -p "visor-plugin-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" -f container/compose.yaml)
 scratch="$(mktemp -d)"
 cleanup() {
@@ -15,16 +20,16 @@ cleanup() {
 }
 trap cleanup EXIT
 
-"${compose[@]}" pull writer
 test "$(docker image inspect --format '{{.Architecture}}' "$VISOR_IMAGE")" = "$EXPECTED_ARCH"
 revision="$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$VISOR_IMAGE")"
 [[ "$revision" =~ ^[a-f0-9]{40}$ ]]
-printf 'Visor TEST %s %s from %s\n' "$EXPECTED_ARCH" "$PUBLISHED_TEST_INDEX" "$revision"
-if ! "${compose[@]}" up -d --wait --wait-timeout 90 writer; then
+printf 'Visor image %s %s from %s\n' "$EXPECTED_ARCH" "$VISOR_IMAGE" "$revision"
+if ! "${compose[@]}" up -d --pull never --wait --wait-timeout 90 writer; then
     "${compose[@]}" logs writer
     exit 1
 fi
 id="$("${compose[@]}" ps -q writer)"
+test "$(docker inspect --format '{{.HostConfig.NetworkMode}}' "$id")" = none
 docker inspect --format 'Network={{.HostConfig.NetworkMode}} ReadOnly={{.HostConfig.ReadonlyRootfs}} CapDrop={{json .HostConfig.CapDrop}} SecurityOpt={{json .HostConfig.SecurityOpt}} AppArmor={{.AppArmorProfile}}' "$id"
 "${compose[@]}" exec -T writer python3 - < ci/container/published-github-issue-probe.py
 
@@ -35,7 +40,8 @@ mkdir "$scratch/source"
 git archive "$revision" | tar -xf - -C "$scratch/source"
 (
     cd "$scratch/source"
-    cargo test --locked --no-default-features --features headless --lib --no-run --message-format=json
+    CARGO_PROFILE_TEST_DEBUG=0 cargo test --locked --no-default-features --features headless \
+        --lib --no-run --message-format=json
 ) | python3 -c '
 import json, sys
 for line in sys.stdin:

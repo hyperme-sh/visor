@@ -53,6 +53,9 @@ remove them explicitly rather than deleting unrelated resources.
 Networking is off by default. Enabling network access is an operator decision;
 apply an egress policy appropriate to the apps and MCP services in use. Local
 HTTP/SSE fixtures work over each container's own loopback interface.
+The bundled GitHub issue plugin can start in this profile. Live GitHub reads
+require explicit egress from Visor's broker. The worker itself is confined to
+its standard I/O pipes.
 
 ## Native CI builds
 
@@ -63,7 +66,9 @@ platform and local image ID. CI checks the unprivileged user, entrypoint,
 readiness command and absence of implicit ports or volumes before upload.
 Archives expire after one day. Main CI additionally publishes the verified native
 images to GHCR and combines their registry digests into the moving `:test` channel.
-PR jobs cannot publish. No running container is started by these build jobs.
+PR jobs cannot publish. Each native job starts one disposable container with
+the standard Compose profile and checks bundled plugin discovery, opt-in,
+and execution. The issue-read fixture runs on that container's loopback.
 
 Verify the downloaded archive against the manifest before loading it. After
 `docker image load`, compare the loaded image ID and platform with the manifest;

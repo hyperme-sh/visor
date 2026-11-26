@@ -119,6 +119,7 @@ struct Manifest {
 }
 
 pub(crate) struct Package {
+    bundled: bool,
     manifest: Manifest,
     digest: String,
     executable: Arc<[u8]>,
@@ -224,6 +225,7 @@ impl Descriptor {
         let input = schema::compile(&tool.input_schema).map_err(|_| Error::Package)?;
         let output = schema::compile(&tool.output_schema).map_err(|_| Error::Package)?;
         Ok(Package {
+            bundled: false,
             manifest: self.manifest,
             digest: self.digest,
             executable: executable.into(),

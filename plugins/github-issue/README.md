@@ -19,10 +19,11 @@ the signed file at a root-owned path. Visor verifies it before listing or
 granting it. The image owns updates to the bundled package. An existing
 owner-installed package with the same ID retains precedence.
 
-Actual reads need GitHub egress from Visor and a host policy that allows
-Bubblewrap to create its private namespaces. CI checks the shipped file on
-each native image, then exercises it in the sandbox on the disposable native
-runner with a loopback provider fixture and an empty user plugin store.
+The image-owned worker installs a syscall allowlist before reading input. The
+worker can use its standard I/O pipes and memory. Visor handles provider
+requests, which require explicit GitHub egress for live reads. CI exercises
+both native images under the standard network-free Compose profile using a
+loopback provider fixture and an empty user plugin store.
 
 ## Build and install a standalone copy
 
@@ -102,7 +103,8 @@ return issues.map(({ number, title, state }) => ({ number, title, state }));
 Visor checks the live session, original grant, local consent, GitHub account,
 and repository visibility on each read. A refused read ends the run. Closing
 the session, pausing automation, or revoking the grant stops the run. The
-existing Linux plugin sandbox isolates the JavaScript process. All provider
+Linux plugin sandbox isolates the JavaScript process. Separately installed
+packages use Bubblewrap. All provider
 requests and credentials stay in Visor. Code Mode accepts up to 8 KiB of source,
 four issue reads, 16 KiB of JSON output, and 15 seconds per run.
 

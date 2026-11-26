@@ -232,11 +232,14 @@ private func desktopCallback(_ bytes: UnsafePointer<UInt8>?, _ count: Int, _ out
                     }
                 }
             } catch { failure = error.localizedDescription }
-            selectingPack = false
-            if started {
-                if let failure { message = failure }
-                update()
+            if started, let failure {
+                let alert = NSAlert()
+                alert.messageText = "Companion pack operation failed"
+                alert.informativeText = failure
+                alert.runModal()
             }
+            selectingPack = false
+            if started { update() }
         }
     }
 

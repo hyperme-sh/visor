@@ -24,7 +24,7 @@ use crate::mascot::{self, Mascot, Reel};
 use crate::pack_picker::{self, Selection};
 use crate::pages;
 use crate::pointer::{self, BugCursor, LiveInput, Watch};
-use crate::presentation::{self, Pack};
+use crate::presentation;
 use crate::settings;
 use crate::visor::Poller;
 use crate::voice::Voice;
@@ -94,21 +94,13 @@ pub fn run() -> Result<(), String> {
     }
     let config = credentials::config_dir();
     let presentation = settings::presentation(&config);
-    let load_pack = |setting, id: Option<&str>| {
-        let id = id?;
-        match Pack::load(&config, id) {
-            Ok(pack) => Some(pack),
-            Err(error) => {
-                eprintln!("hypermesh-companion: {setting}: {error}; using the default");
-                None
-            }
-        }
-    };
-    let appearance = load_pack("appearance_pack", presentation.appearance.as_deref());
+    let (appearance, voice) = pack_picker::load_saved(
+        &config,
+        presentation.appearance.as_deref(),
+        presentation.voice.as_deref(),
+    );
     let (sprites, art) = pack_picker::load_appearance(appearance.as_ref());
-    let voice = load_pack("voice_pack", presentation.voice.as_deref())
-        .as_ref()
-        .map_or_else(Voice::silent, Voice::load);
+    let voice = voice.as_ref().map_or_else(Voice::silent, Voice::load);
     let app = App {
         sprites,
         voice,

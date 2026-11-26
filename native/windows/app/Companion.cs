@@ -264,9 +264,14 @@ internal sealed class Companion : Form
             else if (medium == "remove") await CommunityPacks.Remove(this, packs);
             else await packs.Choose(this, medium);
         }
-        catch (InvalidOperationException error) { if (!closing) message = error.Message; }
-        catch { if (!closing) message = "The companion pack operation could not be completed."; }
+        catch (InvalidOperationException error) { ShowPackError(error.Message); }
+        catch { ShowPackError("The companion pack operation could not be completed."); }
         finally { packBusy = false; if (!closing) UpdateStatus(); }
+    }
+
+    private void ShowPackError(string detail)
+    {
+        if (!closing) MessageBox.Show(this, detail, "Companion pack operation failed", MessageBoxButtons.OK, MessageBoxIcon.Error);
     }
     private void PhysicalInput()
     {

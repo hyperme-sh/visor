@@ -104,6 +104,7 @@ fn declaration(dir: &std::path::Path, workspace: &str) -> Result<Option<Declarat
 #[serde(deny_unknown_fields)]
 pub(super) struct RequestBody {
     workspace: String,
+    wsl_distro: Option<String>,
     operation: Operation,
 }
 
@@ -255,6 +256,20 @@ fn connected_run<'a>(
         .ok_or_else(ApiError::missing)
 }
 
+fn validate_wsl_workspace(
+    workspace: &str,
+    requested: Option<&str>,
+    current: Option<&str>,
+) -> Result<(), ApiError> {
+    if requested != current {
+        return Err(ApiError::forbidden("Terminal task belongs to a different WSL distribution"));
+    }
+    if current.is_some() && !crate::workspace_runtime::wsl_linux_path(workspace) {
+        return Err(ApiError::bad("Use the Linux workspace path inside the WSL distribution"));
+    }
+    Ok(())
+}
+
 pub(super) async fn exchange(
     State(state): State<Arc<AppState>>,
     Extension(link): Extension<CompanionLink>,
@@ -263,6 +278,8 @@ pub(super) async fn exchange(
     if !link.0 {
         return Err(ApiError::forbidden("Private companion connection required"));
     }
+    let distro = crate::workspace_runtime::wsl_distro().map_err(ApiError::unavailable)?;
+    validate_wsl_workspace(&body.workspace, body.wsl_distro.as_deref(), distro)?;
     let authority = authority(&state, &body.workspace).await?;
     let store = &state.terminal_tasks;
     let consent = local_consent(&state, authority.session);
@@ -278,11 +295,15 @@ pub(super) async fn exchange(
                     "interactive": d.task.interactive,
                 })
             });
-            Ok(Json(json!({
+            let mut context = json!({
                 "boot": store.boot, "workspace": body.workspace, "session": authority.session,
                 "binding": authority.binding, "task": task,
                 "access": if consent.is_some() { "ready" } else { "paused" },
-            })))
+            });
+            if let Some(distro) = distro {
+                context["wsl_distro"] = json!(distro);
+            }
+            Ok(Json(context))
         }
         Operation::Start {
             boot,
@@ -592,13 +613,25 @@ mod tests {
         workspace: &std::path::Path,
         operation: Value,
     ) -> (StatusCode, Value) {
+        let distro = crate::workspace_runtime::wsl_distro().unwrap();
         trust_test_request(
             app.clone(),
             "POST",
             "/terminal-task",
-            json!({"workspace":workspace,"operation":operation}),
+            json!({"workspace":workspace,"wsl_distro":distro,"operation":operation}),
         )
         .await
+    }
+
+    #[test]
+    fn terminal_scope_rejects_wrong_wsl_distribution_and_windows_paths() {
+        let workspace = "/home/dev/project";
+        assert!(validate_wsl_workspace(workspace, None, None).is_ok());
+        assert!(validate_wsl_workspace(workspace, Some("Ubuntu"), Some("Ubuntu")).is_ok());
+        assert!(validate_wsl_workspace(workspace, Some("Debian"), Some("Ubuntu")).is_err());
+        assert!(validate_wsl_workspace(workspace, None, Some("Ubuntu")).is_err());
+        assert!(validate_wsl_workspace(workspace, Some("Ubuntu"), None).is_err());
+        assert!(validate_wsl_workspace("C:/project", Some("Ubuntu"), Some("Ubuntu")).is_err());
     }
 
     #[test]

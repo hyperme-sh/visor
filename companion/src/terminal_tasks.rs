@@ -1,5 +1,6 @@
 //! CLI and editor transport for one assigned terminal task.
 use base64::{engine::general_purpose::STANDARD, Engine};
+use hypermesh_visor::workspace_runtime::{wsl_distro, wsl_linux_path};
 use serde_json::{json, Value};
 use std::io::{Read, Write};
 use std::time::Duration;
@@ -11,10 +12,27 @@ const ENDPOINT: &str = "/terminal-task";
 const USAGE: &str = "Usage: hypermesh-companion --terminal-task WORKSPACE context | run REVISION | watch ID [CURSOR] | interact ID [CURSOR] [--take-over] | cancel ID | request";
 
 fn exchange(workspace: &str, operation: Value) -> Result<Value, String> {
-    crate::visor::trust_request(
-        ENDPOINT,
-        Some(json!({"workspace":workspace,"operation":operation})),
-    )
+    let distro = wsl_distro()?;
+    let context = operation["type"] == "context";
+    let mut body = json!({"workspace":workspace,"operation":operation});
+    if let Some(distro) = distro {
+        body["wsl_distro"] = json!(distro);
+    }
+    let reply =
+        crate::visor::trust_request(ENDPOINT, Some(body)).map_err(|error| match distro {
+            Some(distro) => {
+                format!("Visor workspace {workspace} in WSL {distro} unavailable. {error}")
+            }
+            None => error,
+        })?;
+    if context
+        && distro.is_some()
+        && (reply["wsl_distro"].as_str() != distro
+            || reply["workspace"].as_str() != Some(workspace))
+    {
+        return Err("Visor reported a different WSL distribution or workspace".into());
+    }
+    Ok(reply)
 }
 
 fn action(scope: &Value, kind: &str, id: Uuid) -> Value {
@@ -133,6 +151,9 @@ pub(crate) fn run(args: Vec<String>) -> Result<bool, String> {
     let [workspace, command, rest @ ..] = args.as_slice() else {
         return Err(USAGE.into());
     };
+    if wsl_distro()?.is_some() && !wsl_linux_path(workspace) {
+        return Err("Use the absolute Linux workspace path inside the WSL distribution".into());
+    }
     let workspace = std::fs::canonicalize(workspace).map_err(|_| "Local workspace unavailable")?;
     let workspace = workspace.to_str().ok_or("Invalid workspace path")?;
     match (command.as_str(), rest) {

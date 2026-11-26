@@ -47,6 +47,8 @@ mod mcp_prompts;
 mod host;
 mod permissions;
 mod local_reads;
+#[cfg(unix)]
+mod terminal_tasks;
 mod permission_dream;
 mod access_actions;
 mod acp_machine;
@@ -63,6 +65,8 @@ pub struct AppState {
     prompts_stopped: AtomicBool,
     host_bridge: Option<crate::host_bridge::Bridge>,
     tasks: tasks::Queue,
+    #[cfg(unix)]
+    terminal_tasks: terminal_tasks::Runs,
     #[cfg(target_os = "linux")]
     plugins: Mutex<crate::plugins::Grants>,
     #[cfg(target_os = "linux")]
@@ -199,6 +203,8 @@ impl AppState {
             prompts_stopped: AtomicBool::new(false),
             host_bridge: None,
             tasks: tasks::Queue::new(),
+            #[cfg(unix)]
+            terminal_tasks: terminal_tasks::Runs::new(),
             #[cfg(target_os = "linux")]
             plugins: Mutex::default(),
             #[cfg(target_os = "linux")]
@@ -848,6 +854,8 @@ fn routes(state: Arc<AppState>, from_companion: bool) -> Router {
     let router = Router::new();
     #[cfg(target_os = "linux")]
     let router = router.merge(plugins::routes());
+    #[cfg(unix)]
+    let router = router.route("/terminal-task", post(terminal_tasks::exchange));
     router
         .route("/capabilities", get(capabilities))
         .route("/host/capabilities", get(host::catalog))
@@ -2066,6 +2074,8 @@ async fn close_session(
         return Err(ApiError::missing());
     }
     state.tasks.close(id);
+    #[cfg(unix)]
+    state.terminal_tasks.close(id);
     #[cfg(target_os = "linux")]
     lock(&state.plugins).close(id);
     lock(&state.frames).remove(&id);
@@ -3219,7 +3229,7 @@ mod tests {
     use hyper_util::rt::TokioIo;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
-    struct FakeDesktop {
+    pub(super) struct FakeDesktop {
         scoped_sessions: Mutex<Vec<Uuid>>,
         frame: Mutex<Vec<u8>>,
         audio: Mutex<Vec<u8>>,
@@ -3969,7 +3979,7 @@ mod tests {
         assert_eq!(value["session"]["purpose"], purpose);
     }
 
-    async fn trust_test_request(
+    pub(super) async fn trust_test_request(
         app: Router,
         method: &str,
         path: &str,
@@ -8186,7 +8196,7 @@ while True:
         assert!(!lock(&desktop.typed).is_empty());
     }
 
-    fn task_fixture() -> (Arc<AppState>, Arc<FakeDesktop>, Uuid) {
+    pub(super) fn task_fixture() -> (Arc<AppState>, Arc<FakeDesktop>, Uuid) {
         let desktop = FakeDesktop::new();
         let state = Arc::new(AppState::new(desktop.clone(), Duration::from_millis(5)));
         let session = Uuid::new_v4();

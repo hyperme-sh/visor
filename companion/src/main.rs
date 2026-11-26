@@ -34,6 +34,7 @@ mod pointer;
 mod presentation;
 mod prompt;
 mod session_cli;
+mod terminal_tasks;
 mod session_selection;
 mod companions;
 mod settings;
@@ -85,6 +86,14 @@ fn main() -> ExitCode {
             Ok(()) => ExitCode::SUCCESS,
             Err(error) => {
                 eprintln!("hypermesh-companion plugins: {error}");
+                ExitCode::FAILURE
+            }
+        },
+        Some("--terminal-task") => match terminal_tasks::run(args.collect()) {
+            Ok(true) => ExitCode::SUCCESS,
+            Ok(false) => ExitCode::FAILURE,
+            Err(error) => {
+                eprintln!("Terminal task: {error}");
                 ExitCode::FAILURE
             }
         },

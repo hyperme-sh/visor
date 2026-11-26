@@ -31,7 +31,14 @@ internal static class DesktopContracts
         Application.SetHighDpiMode(HighDpiMode.PerMonitorV2);
         Application.EnableVisualStyles();
         Application.SetCompatibleTextRenderingDefault(false);
-        using Form fixture = new() { Text = "Visor CI desktop fixture", Width = 420, Height = 280, StartPosition = FormStartPosition.Manual, Location = new Point(60, 60), TopMost = true, BackColor = Color.FromArgb(37, 165, 104) };
+        using Form fixture = new()
+        {
+            Text = "Visor CI desktop fixture",
+            StartPosition = FormStartPosition.CenterScreen,
+            WindowState = FormWindowState.Maximized,
+            TopMost = true,
+            BackColor = Color.FromArgb(37, 165, 104)
+        };
         TextBox entry = new() { Location = new Point(20, 20), Width = 340 };
         fixture.Controls.Add(entry);
         fixture.Shown += async (_, _) =>
@@ -61,7 +68,9 @@ internal static class DesktopContracts
             authority.Grant(authority.Generation, Session);
             Console.WriteLine("STEP capture");
             Rectangle bounds = SystemInformation.VirtualScreen;
-            Point sample = fixture.PointToScreen(new Point(150, 120));
+            Point sample = fixture.PointToScreen(new Point(fixture.ClientSize.Width / 2, fixture.ClientSize.Height / 2));
+            Win32.Point screenPoint = new() { X = sample.X, Y = sample.Y };
+            await Until(() => Win32.WindowFromPoint(screenPoint) == fixture.Handle, "Fixture did not own the capture sample point");
             await CheckCapture(driver, fixture, bounds, sample);
             bool refused = false;
             Console.WriteLine("STEP cross-session refusal");

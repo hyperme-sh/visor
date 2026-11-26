@@ -2,7 +2,7 @@
 //! Leaving the loop, including a panic unwind, puts the system cursor back.
 
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{mpsc, Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use x11rb::connection::Connection;
@@ -21,6 +21,7 @@ use crate::automation::{self, BugClick, CursorPose, Effect, Machine, Motion, Pha
 use crate::credentials;
 use crate::draw::{self, Action, Scene, Sprites};
 use crate::mascot::{self, Mascot, Reel};
+use crate::pack_picker::{self, Selection};
 use crate::pages;
 use crate::pointer::{self, BugCursor, LiveInput, Watch};
 use crate::presentation::{Pack, Signals};
@@ -38,6 +39,7 @@ struct App {
     sprites: Sprites,
     voice: Voice,
     presentation: settings::Presentation,
+    pack_picker: Option<mpsc::Receiver<Result<Option<Selection>, String>>>,
     pose: Pose,
     menu: bool,
     compact: bool,
@@ -103,12 +105,7 @@ pub fn run() -> Result<(), String> {
         }
     };
     let appearance = load_pack("appearance_pack", presentation.appearance.as_deref());
-    let sprites = Sprites::load();
-    let art = pointer::Art::load();
-    let (sprites, art) = match appearance {
-        Some(pack) => (sprites.with_pack(&pack), art.with_pack(&pack)),
-        None => (sprites, art),
-    };
+    let (sprites, art) = pack_picker::load_appearance(appearance.as_ref());
     let voice = load_pack("voice_pack", presentation.voice.as_deref())
         .as_ref()
         .map_or_else(Voice::silent, Voice::load);
@@ -116,6 +113,7 @@ pub fn run() -> Result<(), String> {
         sprites,
         voice,
         presentation,
+        pack_picker: None,
         pose: Pose::Idle,
         menu: false,
         compact: settings::compact_mode(&config),
@@ -159,7 +157,7 @@ pub fn run() -> Result<(), String> {
     show(app, art)
 }
 
-fn show(mut app: App, art: pointer::Art) -> Result<(), String> {
+fn show(mut app: App, mut art: pointer::Art) -> Result<(), String> {
     let (conn, screen_num) = x11rb::connect(None).map_err(|err| err.to_string())?;
     let screen = &conn.setup().roots[screen_num];
     let root = screen.root;
@@ -499,6 +497,9 @@ fn show(mut app: App, art: pointer::Art) -> Result<(), String> {
         // its mtime changes.
         let upgrading_file = app.notice.current(&app.config, Instant::now());
         let mascot = mascot_now(&app, &snap, upgrading_file);
+        if apply_pack_choice(&mut app, &mut art, mascot) {
+            guard.cursor.restore(&conn);
+        }
         if snap.connected {
             app.session_id = snap.session_id.clone();
             app.pose = snap.pose.clone();
@@ -672,6 +673,47 @@ fn display_status(app: &App) -> String {
     app.status.lock().unwrap().clone()
 }
 
+/// Apply a completed selection after the picker has loaded assets off the X11
+/// loop. Persist on the same thread as the other companion settings writes.
+fn apply_pack_choice(app: &mut App, art: &mut pointer::Art, mascot: Mascot) -> bool {
+    let Some(receiver) = &app.pack_picker else {
+        return false;
+    };
+    let result = match receiver.try_recv() {
+        Ok(result) => result,
+        Err(mpsc::TryRecvError::Empty) => return false,
+        Err(mpsc::TryRecvError::Disconnected) => Err("Companion pack picker stopped".into()),
+    };
+    app.pack_picker = None;
+    let result = match result {
+        Ok(Some(Selection::Appearance {
+            id,
+            sprites,
+            art: new_art,
+        })) => settings::set_appearance_pack(&app.config, &id).map(|()| {
+            app.sprites = sprites;
+            *art = new_art;
+            app.reel = Reel::new(mascot);
+            true
+        }),
+        Ok(Some(Selection::Voice { id, voice })) => {
+            settings::set_voice_pack(&app.config, &id).map(|()| {
+                app.voice = voice;
+                false
+            })
+        }
+        Ok(None) => return false,
+        Err(error) => Err(error),
+    };
+    match result {
+        Ok(appearance_changed) => appearance_changed,
+        Err(error) => {
+            *app.status.lock().unwrap() = error;
+            false
+        }
+    }
+}
+
 fn sync_cursor(
     app: &mut App,
     guard: &mut CursorGuard<'_>,
@@ -834,6 +876,17 @@ fn on_click(
                     app.menu = false;
                 }
                 Err(err) => *app.status.lock().unwrap() = err,
+            }
+        }
+        Action::CompanionPacks => {
+            app.menu = false;
+            if app.pack_picker.is_none() {
+                let config = app.config.clone();
+                let (send, receive) = mpsc::channel();
+                std::thread::spawn(move || {
+                    let _ = send.send(pack_picker::run(&config));
+                });
+                app.pack_picker = Some(receive);
             }
         }
         Action::OpenSessionCli => {

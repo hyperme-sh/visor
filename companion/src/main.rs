@@ -25,6 +25,7 @@ mod mcp_servers;
 mod mcp_status;
 mod mcp_trust;
 mod mcp_trust_gui;
+mod pack_picker;
 mod pages;
 mod pointer;
 mod presentation;

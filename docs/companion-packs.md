@@ -1,6 +1,6 @@
 # Visor companion packs
 
-Make a cat, dog, rabbit, robot, or original anime character by putting artwork and an optional voice in a folder. A single still image is enough. Add clips for more activities as you make them, and reuse any asset across cues. The Linux desktop companion reads packs at startup.
+Make a cat, dog, rabbit, robot, or original anime character by putting artwork and an optional voice in a folder. A single still image is enough. Add clips for more activities as you make them, and reuse any asset across cues. The Linux desktop companion loads packs at startup and when you select one in the menu.
 
 ## Make and install a pack
 
@@ -18,9 +18,9 @@ Make a cat, dog, rabbit, robot, or original anime character by putting artwork a
    }
    ```
 
-3. Add `appearance_pack = "moon-rabbit"` at the root of `companion.toml` in the same configuration directory. Restart the companion. Remove the setting and restart to return to the bundled bug.
+3. Open **Companion packs → Appearance** in the companion menu and choose **Moon Rabbit**. Choose **Bundled appearance** to switch back. The picker uses `zenity`. You can also set `appearance_pack = "moon-rabbit"` at the root of `companion.toml` and restart.
 
-To share a pack, share the folder, including its manifest and referenced files. Include a license that permits redistribution and modification, attribution for art and voice, and editable source files where available. Use recordings you have permission to share. To make a variant, copy the folder under a new name, edit its files, and select the new folder in `companion.toml`. Pack folder names and asset filenames start with an ASCII letter or digit and can contain letters, digits, `-`, `_`, and `.`. Assets are regular files directly inside the pack folder.
+To share a pack, share the folder, including its manifest and referenced files. Include a license that permits redistribution and modification, attribution for art and voice, and editable source files where available. Use recordings you have permission to share. To make a variant, copy the folder under a new name, edit its files, and select it in the picker. Pack folder names and asset filenames start with an ASCII letter or digit and can contain letters, digits, `-`, `_`, and `.`. Assets are regular files directly inside the pack folder.
 
 ## Bind artwork and voice to cues
 
@@ -44,9 +44,9 @@ Omit any entry you have yet to make, set it to `null`, or leave its `frames` lis
 
 ## Pick a voice
 
-Add a `voice` map to the same `pack.json` or to a separate voice-only pack. For example, `"voice": { "state:paused": "paused.wav", "state:disconnected": "offline.wav" }` binds two recorded lines. Select it with `voice_pack = "moon-rabbit"` in `companion.toml`. `appearance_pack` and `voice_pack` are independent, so the same rabbit can use several voices, and the same voice can be used with different characters.
+Add a `voice` map to the same `pack.json` or to a separate voice-only pack. For example, `"voice": { "state:paused": "paused.wav", "state:disconnected": "offline.wav" }` binds two recorded lines. Select it in **Companion packs → Voice**, or set `voice_pack = "moon-rabbit"` in `companion.toml` and restart. Appearances and voices are independent.
 
-Use mono 16-bit PCM WAV at 8–48 kHz, up to three seconds per line. Visor plays a cue when the selected recording changes and interrupts it if the selection changes again. Unmapped cues are silent. Remove `voice_pack` to mute all pack audio. Playback uses the local Linux ALSA `aplay` program at `/usr/bin/aplay`. Pack voices play prerecorded lines. Generated speech and text-to-speech engines are future extensions.
+Use mono 16-bit PCM WAV at 8–48 kHz, up to three seconds per line. Visor plays a cue when the selected recording changes and interrupts it if the selection changes again. Unmapped cues are silent. Choose **Mute** in the picker to mute all pack audio. Playback uses the local Linux ALSA `aplay` program at `/usr/bin/aplay`. Pack voices play prerecorded lines. Generated speech and text-to-speech engines are future extensions.
 
 Format 1 uses a JSON manifest of at most 32 KiB with `format`, `name`, and optional `sprites`, `cursor`, and `voice` maps. The limit is 64 bindings per map, 64 distinct sprite filenames, and 16 distinct voice filenames. Visor reads bounded local media files. Packs carry presentation data only. Device actions, prompt content, credentials, and network access stay outside the pack contract.
 

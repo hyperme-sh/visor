@@ -51,6 +51,18 @@ pub fn presentation(dir: &Path) -> Presentation {
     }
 }
 
+pub fn set_appearance_pack(dir: &Path, id: &str) -> Result<(), String> {
+    write_value(
+        dir,
+        "appearance_pack",
+        &Value::String(id.into()).to_string(),
+    )
+}
+
+pub fn set_voice_pack(dir: &Path, id: &str) -> Result<(), String> {
+    write_value(dir, "voice_pack", &Value::String(id.into()).to_string())
+}
+
 /// Pupils track the pointer only when this is true. Missing file means off.
 pub fn eyes_follow_pointer(dir: &Path) -> bool {
     read_bool(dir, EYES, false)

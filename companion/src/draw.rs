@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use std::fs::File;
 use std::io::BufWriter;
 use std::path::Path;
-use std::rc::Rc;
+use std::sync::Arc;
 
 use crate::auth::Pose;
 use crate::mascot::{self, Mascot};
@@ -23,6 +23,7 @@ pub enum Action {
     Feedback,
     ToggleMenu,
     ToggleCompact,
+    CompanionPacks,
     OpenCli,
     OpenSessionCli,
     OpenSessionForum,
@@ -107,7 +108,7 @@ pub struct Sprites {
 struct CustomClip {
     ms_per_frame: u64,
     looped: bool,
-    frames: Vec<Rc<Image>>,
+    frames: Vec<Arc<Image>>,
 }
 
 impl Sprites {
@@ -195,7 +196,7 @@ impl Sprites {
 fn custom_clip(
     pack: &Pack,
     entry: &serde_json::Value,
-    cache: &mut HashMap<String, Option<Rc<Image>>>,
+    cache: &mut HashMap<String, Option<Arc<Image>>>,
 ) -> Result<Option<CustomClip>, String> {
     const MAX_UNIQUE_FRAMES: usize = 64;
     const MAX_FRAME_BYTES: usize = 1024 * 1024;
@@ -215,12 +216,12 @@ fn custom_clip(
         }
         let image = cache.entry(name.clone()).or_insert_with(|| {
             let bytes = pack.asset(&name, ".png", MAX_FRAME_BYTES).ok()?;
-            read_png(&bytes, Some((400, 520))).ok().map(Rc::new)
+            read_png(&bytes, Some((400, 520))).ok().map(Arc::new)
         });
         let Some(image) = image else {
             return Err("expected a readable 400×520 PNG with visible pixels".into());
         };
-        frames.push(Rc::clone(image));
+        frames.push(Arc::clone(image));
     }
     Ok(Some(CustomClip {
         ms_per_frame,
@@ -370,6 +371,7 @@ pub fn render(
         };
         let rows = [
             ("Compact / expanded icon", Action::ToggleCompact),
+            ("Companion packs", Action::CompanionPacks),
             ("Session CLI", Action::OpenSessionCli),
             ("Session forum", Action::OpenSessionForum),
             ("Session in VS Code", Action::OpenSessionEditor),

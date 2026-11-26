@@ -149,9 +149,12 @@ pub(crate) async fn start_code(
 ) -> Result<(Child, Channel, super::Staged), Error> {
     let staging = staging.to_owned();
     let bytes = package.executable.clone();
-    let executable = tokio::task::spawn_blocking(move || prepare(&staging, &bytes))
-        .await
-        .map_err(|_| Error::Unavailable)??;
+    let executable = tokio::task::spawn_blocking(move || {
+        hypermesh_local_storage::create_dir(&staging).map_err(|_| Error::Unavailable)?;
+        prepare(&staging, &bytes)
+    })
+    .await
+    .map_err(|_| Error::Unavailable)??;
     let mut child = sandbox_command(&executable.0, &[], &["--code-mode-v1"])
         .spawn()
         .map_err(|_| Error::Unavailable)?;

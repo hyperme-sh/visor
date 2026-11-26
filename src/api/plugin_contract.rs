@@ -635,6 +635,36 @@ async fn github_issue_plugin_uses_the_selected_account_and_public_repository() {
         return [first, github.issue.read(next)].map(({number, title, state}) =>
             ({number, title, state}));
     "});
+    let mut opted_in = enable.clone();
+    opted_in["code_mode"] = json!(true);
+    let scratch = root.0.join("plugin-scratch");
+    assert!(!scratch.exists());
+    let enabled = request(&companion, "POST", &grants, opted_in.clone()).await;
+    assert_eq!(enabled.status(), StatusCode::CREATED);
+    assert_eq!(body(enabled).await["code_mode"], true);
+    let first_run = request(
+        &companion,
+        "POST",
+        &code,
+        json!({"code":
+            "return [typeof fetch, typeof require, typeof process, typeof std, typeof os];"
+        }),
+    )
+    .await;
+    let status = first_run.status();
+    let first_run = body(first_run).await;
+    assert_eq!(status, StatusCode::OK, "{first_run}");
+    assert_eq!(first_run["result"], json!(vec!["undefined"; 5]));
+    assert_eq!(first_run["calls"], 0);
+    assert_eq!(calls.load(Ordering::Acquire), 0);
+    hypermesh_local_storage::check_dir(&scratch).unwrap();
+    assert_eq!(
+        request(&companion, "DELETE", &plugin, Value::Null)
+            .await
+            .status(),
+        StatusCode::NO_CONTENT
+    );
+
     assert_eq!(
         request(&companion, "POST", &grants, enable.clone())
             .await
@@ -758,8 +788,6 @@ async fn github_issue_plugin_uses_the_selected_account_and_public_repository() {
     assert_eq!(calls.load(Ordering::Acquire), before);
 
     mode.store(0, Ordering::Release);
-    let mut opted_in = enable;
-    opted_in["code_mode"] = json!(true);
     let enabled = request(&companion, "POST", &grants, opted_in).await;
     assert_eq!(enabled.status(), StatusCode::CREATED);
     assert_eq!(body(enabled).await["code_mode"], true);
@@ -828,19 +856,6 @@ async fn github_issue_plugin_uses_the_selected_account_and_public_repository() {
     );
 
     let before = calls.load(Ordering::Acquire);
-    let isolation = body(
-        request(
-            &companion,
-            "POST",
-            &code,
-            json!({"code":
-                "return [typeof fetch, typeof require, typeof process, typeof std, typeof os];"
-            }),
-        )
-        .await,
-    )
-    .await;
-    assert_eq!(isolation["result"], json!(vec!["undefined"; 5]));
     for script in [
         "return github.issue.read('7');",
         "return 'x'.repeat(17_000);",

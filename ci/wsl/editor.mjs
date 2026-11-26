@@ -91,8 +91,27 @@ async function click(selector, label) {
   return true;
 }
 
-function pick(label) {
-  return until(label, () => click('.quick-input-widget .monaco-list-row', label));
+async function pick(label) {
+  await until(label, async () => {
+    const { target, focused } = await evaluate(`(() => {
+      const input = document.activeElement;
+      const rows = [...document.querySelectorAll('.quick-input-widget .monaco-list-row')]
+        .filter(row => row.getBoundingClientRect().width && row.getBoundingClientRect().height);
+      const target = rows.findIndex(row => row.innerText.split('\\n')
+        .some(line => line.trim() === ${JSON.stringify(label)}));
+      const focused = rows.findIndex(row => row.classList.contains('focused')
+        || (row.id && row.id === input?.getAttribute('aria-activedescendant')));
+      return { target, focused };
+    })()`);
+    if (target < 0) return false;
+    if (focused === target) {
+      await key('Enter', 'Enter', 13);
+      return true;
+    }
+    const up = focused > target;
+    await key(up ? 'ArrowUp' : 'ArrowDown', up ? 'ArrowUp' : 'ArrowDown', up ? 38 : 40);
+    return false;
+  });
 }
 
 const quickInputFocused = "document.activeElement instanceof HTMLInputElement && !!document.activeElement.closest('.quick-input-widget')";

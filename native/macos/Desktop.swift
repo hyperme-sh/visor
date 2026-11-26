@@ -229,10 +229,10 @@ func handle(_ request: [String: Any], checkpoint: () throws -> Void = {}) async 
 }
 // AppKit pointer and window coordinates share the same screen space, including
 // displays left of or below the primary screen. Do not mix in CG desktop y.
-func nativePointerOverlayFrame(pointer: CGPoint, screens: [CGRect]) -> CGRect? {
+func nativePointerOverlayFrame(pointer: CGPoint, screens: [CGRect], custom: Bool = false) -> CGRect? {
     guard pointer.x.isFinite, pointer.y.isFinite,
           screens.contains(where: { $0.contains(pointer) }) else { return nil }
-    return CGRect(x: pointer.x - 24, y: pointer.y - 24, width: 48, height: 48)
+    return CGRect(x: pointer.x - (custom ? 15 : 24), y: pointer.y - (custom ? 40.5 : 24), width: 48, height: 48)
 }
 func nativePointerOverlayVisible(connected: Bool, sessionOpen: Bool, allowed: Bool,
                                  phase: String, restartRequired: Bool) -> Bool {
@@ -251,6 +251,7 @@ func nativePointerOverlayVisible(connected: Bool, sessionOpen: Bool, allowed: Bo
     private var timer: Timer?
     private var tick = 0
     private var active = false
+    var customImage: NSImage?
     var windowNumber: Int? { panel?.windowNumber }
 
     func setVisible(_ visible: Bool) {
@@ -261,7 +262,8 @@ func nativePointerOverlayVisible(connected: Bool, sessionOpen: Bool, allowed: Bo
                 guard let path = Bundle.main.path(forResource: "automation_\(frame)_128", ofType: "png", inDirectory: "companion") else { return nil }
                 return NSImage(contentsOfFile: path)
             }
-            guard frames.count == 8 else { frames.removeAll(); return }
+            if frames.count != 8 { frames.removeAll() }
+            guard customImage != nil || !frames.isEmpty else { return }
             let window = PointerPanel(contentRect: CGRect(x: 0, y: 0, width: 48, height: 48),
                                       styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
             window.isReleasedWhenClosed = false
@@ -287,12 +289,18 @@ func nativePointerOverlayVisible(connected: Bool, sessionOpen: Bool, allowed: Bo
     }
     private func refresh() {
         // A queued timer callback cannot restore an overlay after pause.
-        guard active, let panel, frames.count == 8 else { return }
-        guard let frame = nativePointerOverlayFrame(pointer: NSEvent.mouseLocation, screens: NSScreen.screens.map { $0.frame }) else {
+        guard active, let panel else { return }
+        guard let frame = nativePointerOverlayFrame(pointer: NSEvent.mouseLocation,
+                screens: NSScreen.screens.map { $0.frame }, custom: customImage != nil) else {
             panel.orderOut(nil); return
         }
-        let index = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion ? 0 : (tick / 4) % frames.count
-        imageView?.image = frames[index]
+        if let customImage { imageView?.image = customImage }
+        else if !frames.isEmpty {
+            let index = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion ? 0 : (tick / 4) % frames.count
+            imageView?.image = frames[index]
+        } else {
+            panel.orderOut(nil); return
+        }
         panel.setFrame(frame, display: true)
         if !panel.isVisible { panel.orderFrontRegardless() }
         tick = (tick + 1) % 32
@@ -889,6 +897,9 @@ func selfTest() throws {
                 #if EMBEDDED_ENGINE
                 _ = NSApplication.shared
                 try NativeFeedbackController.checkContracts()
+                try verifyNativeUnit(nativePackFrameIndex(count: 2, interval: 40, loop: true, elapsed: 80, reduced: false) == 0)
+                try verifyNativeUnit(nativePackFrameIndex(count: 2, interval: 40, loop: false, elapsed: 80, reduced: false) == 1)
+                try verifyNativeUnit(nativePackFrameIndex(count: 2, interval: 40, loop: false, elapsed: 80, reduced: true) == 0)
                 #endif
                 var delivered = [Int]()
                 do {

@@ -55,6 +55,10 @@ engine DLL, native companion, inverse MCP adapter, session CLI, Conductor and ch
 Signing is deferred. Windows may show an unknown-publisher or SmartScreen prompt;
 this bundle does not request elevation or `uiAccess`.
 
+Use **Companion packs** in the tray menu to select installed appearance and voice
+packs independently. Pack art can skin the tray and automation overlay, and **Mute**
+turns off recorded cues. See the [companion pack guide](../../docs/companion-packs.md).
+
 Set the existing Conductor endpoint configuration and journal paths, then start
 the launcher as your normal user:
 

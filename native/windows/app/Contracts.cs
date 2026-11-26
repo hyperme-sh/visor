@@ -11,6 +11,9 @@ internal static class Contracts
     {
         try
         {
+            Require(CompanionPacks.FrameIndex(2, 40, true, 80, false) == 0);
+            Require(CompanionPacks.FrameIndex(2, 40, false, 80, false) == 1);
+            Require(CompanionPacks.FrameIndex(2, 40, false, 80, true) == 0);
             FeedbackWindow.CheckContracts();
             var feedback = new FeedbackDraft();
             Require(!feedback.Review("Problem", "hello"));

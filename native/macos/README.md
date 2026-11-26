@@ -112,6 +112,11 @@ Open control window restores onboarding and permission status. The menu-bar
 Show floating companion toggle and the panel position persist across launches.
 This surface does not create another agent or grant desktop access.
 
+Use **Companion packs** in the menu bar or floating companion menu to choose
+installed appearance and voice packs. Pack art is used in both companion views
+and the automation overlay. **Mute** turns off recorded cues. See the
+[companion pack guide](../../docs/companion-packs.md).
+
 The icon animates with the current state and respects Reduce Motion. Below it,
 up/down arrows show the latest reported response input/output token counts;
 missing data says No usage. Hover shows the full counts and current status.

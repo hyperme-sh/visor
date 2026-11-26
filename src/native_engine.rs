@@ -110,8 +110,11 @@ pub unsafe extern "C" fn hypermesh_native_control(
         let Some(engine) = ENGINE.get() else { return 1; };
         let Ok(value) = serde_json::from_slice::<serde_json::Value>(std::slice::from_raw_parts(request, length)) else { return 1; };
         let action = value["action"].as_str().unwrap_or("");
-        if engine.failed.load(Ordering::Acquire) && !matches!(action, "crash-consent-status" | "crash-consent-set") { return 1; }
-        let result = if action.starts_with("feedback-") {
+        let pack_request = action.starts_with("pack-");
+        if engine.failed.load(Ordering::Acquire) && !pack_request && !matches!(action, "crash-consent-status" | "crash-consent-set") { return 1; }
+        let result = if pack_request {
+            Some(crate::native_pack::request(&crate::mcp::config_dir(), value.clone()))
+        } else if action.starts_with("feedback-") {
             Some(crate::feedback_session::control(value.clone()))
         } else if matches!(action, "crash-consent-status" | "crash-consent-set") {
             Some(match crate::crash_startup::consent_ui(action, &value["decision"]) {
@@ -171,6 +174,7 @@ pub unsafe extern "C" fn hypermesh_native_control(
             }
         }
         let Ok(bytes) = serde_json::to_vec(&result) else { return 1; };
+        if pack_request && bytes.len() > crate::native_pack::MAX_RESPONSE_BYTES { return 1; }
         let buffer = libc::malloc(bytes.len()) as *mut u8;
         if buffer.is_null() { return 1; }
         std::ptr::copy_nonoverlapping(bytes.as_ptr(), buffer, bytes.len());

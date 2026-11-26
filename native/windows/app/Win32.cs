@@ -27,6 +27,10 @@ internal static class Win32
     internal static extern nint GetModuleHandleW(string? module);
     [DllImport("user32.dll"), DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
     internal static extern bool GetCursorPos(out Point point);
+    private const uint GetClientAreaAnimation = 0x1042;
+    [DllImport("user32.dll"), DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
+    private static extern bool SystemParametersInfoW(uint action, uint parameter, out int value, uint flags);
+    internal static bool ReduceMotion() => SystemParametersInfoW(GetClientAreaAnimation, 0, out int enabled, 0) && enabled == 0;
     [DllImport("user32.dll"), DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
     internal static extern nint GetForegroundWindow();
     [DllImport("user32.dll"), DefaultDllImportSearchPaths(DllImportSearchPath.System32)]

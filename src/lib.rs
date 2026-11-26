@@ -20,6 +20,7 @@ pub mod companion_manager;
 pub mod companion_recovery;
 pub mod companion_docker;
 pub mod companion_lease;
+pub mod companion_packs;
 pub mod companion_runtime;
 pub mod companion_sets;
 pub mod companion_broker;
@@ -38,6 +39,8 @@ mod local_peer;
 mod local_runtime;
 #[cfg(all(any(target_os = "macos", windows), feature = "desktop"))]
 mod native_engine;
+#[cfg(any(all(any(target_os = "macos", windows), feature = "desktop"), test))]
+mod native_pack;
 #[cfg(all(any(target_os = "macos", windows), feature = "desktop"))]
 #[path = "../shared/session_destinations.rs"]
 mod session_destinations;

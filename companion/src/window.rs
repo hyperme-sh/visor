@@ -24,7 +24,7 @@ use crate::mascot::{self, Mascot, Reel};
 use crate::pack_picker::{self, Selection};
 use crate::pages;
 use crate::pointer::{self, BugCursor, LiveInput, Watch};
-use crate::presentation::{Pack, Signals};
+use crate::presentation::{self, Pack};
 use crate::settings;
 use crate::visor::Poller;
 use crate::voice::Voice;
@@ -166,7 +166,7 @@ fn show(mut app: App, mut art: pointer::Art) -> Result<(), String> {
     conn.create_colormap(ColormapAlloc::NONE, colormap, root, visual_id)
         .map_err(|err| err.to_string())?;
     let window = conn.generate_id().map_err(|err| err.to_string())?;
-    app.sprites.select(&Signals::new(
+    app.sprites.select(&presentation::signals(
         Mascot::Disconnected,
         false,
         &app.pose,
@@ -507,7 +507,7 @@ fn show(mut app: App, mut art: pointer::Art) -> Result<(), String> {
             app.session_id = None;
             app.pose = Pose::Idle;
         }
-        let signals = Signals::new(
+        let signals = presentation::signals(
             mascot,
             app.machine.phase() == Phase::Paused,
             &app.pose,

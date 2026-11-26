@@ -1,15 +1,13 @@
 //! Offline picker for packs already in the local configuration directory.
 
-use std::fs;
-use std::io;
 use std::path::Path;
 
 use crate::draw::Sprites;
 use crate::mcp_dialog::{choose, dialog};
 use crate::pointer::Art;
-use crate::presentation::Pack;
 use crate::settings;
 use crate::voice::Voice;
+use hypermesh_visor::companion_packs::{installed, Medium, Pack};
 
 pub enum Selection {
     Appearance {
@@ -58,7 +56,14 @@ fn pick(
     } else {
         ("Mute", current.voice)
     };
-    let mut choices = installed(config, appearance)?;
+    let mut choices = installed(
+        config,
+        if appearance {
+            Medium::Appearance
+        } else {
+            Medium::Voice
+        },
+    )?;
     choices.insert(0, (String::new(), default.to_owned()));
     let rows: Vec<String> = choices
         .iter()
@@ -92,42 +97,10 @@ fn pick(
     Ok(Some(selection))
 }
 
-fn installed(config: &Path, appearance: bool) -> Result<Vec<(String, String)>, String> {
-    let directory = config.join("companion-packs");
-    match fs::symlink_metadata(&directory) {
-        Ok(info) if info.is_dir() => {}
-        Ok(_) => return Err("companion-packs must be a local directory".into()),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(error) => return Err(error.to_string()),
-    }
-    let mut choices = Vec::new();
-    for entry in fs::read_dir(directory)
-        .map_err(|error| error.to_string())?
-        .flatten()
-    {
-        let Ok(id) = entry.file_name().into_string() else {
-            continue;
-        };
-        let Ok(pack) = Pack::load(config, &id) else {
-            continue;
-        };
-        let manifest = pack.manifest;
-        if (appearance && (!manifest.sprites.is_empty() || !manifest.cursor.is_empty()))
-            || (!appearance && !manifest.voice.is_empty())
-        {
-            choices.push((id, manifest.name));
-        }
-        if choices.len() == 128 {
-            break;
-        }
-    }
-    choices.sort();
-    Ok(choices)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
 
     #[test]
     fn choices_are_offline_and_independent() {
@@ -147,11 +120,11 @@ mod tests {
             fs::write(dir.join("pack.json"), body).unwrap();
         }
         assert_eq!(
-            installed(&config, true).unwrap(),
+            installed(&config, Medium::Appearance).unwrap(),
             vec![("rabbit".to_owned(), "Rabbit".to_owned())]
         );
         assert_eq!(
-            installed(&config, false).unwrap(),
+            installed(&config, Medium::Voice).unwrap(),
             vec![("robot".to_owned(), "Robot".to_owned())]
         );
         settings::set_appearance_pack(&config, "rabbit").unwrap();

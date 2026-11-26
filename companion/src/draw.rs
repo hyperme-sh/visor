@@ -10,6 +10,7 @@ use std::sync::Arc;
 use crate::auth::Pose;
 use crate::mascot::{self, Mascot};
 use crate::presentation::{self, ClipSpec, Pack, Signals};
+use hypermesh_visor::companion_packs::{Png, MAX_DISTINCT_SPRITES};
 
 const TARGET_WIDTH: u32 = 400;
 /// `place` keeps 48 px under the window. This leaves that, plus a small gap,
@@ -198,25 +199,17 @@ fn custom_clip(
     entry: &serde_json::Value,
     cache: &mut HashMap<String, Option<Arc<Image>>>,
 ) -> Result<Option<CustomClip>, String> {
-    const MAX_UNIQUE_FRAMES: usize = 64;
-    const MAX_FRAME_BYTES: usize = 1024 * 1024;
-    let spec: ClipSpec =
-        serde_json::from_value(entry.clone()).map_err(|error| error.to_string())?;
-    if spec.frames.is_empty() {
+    let Some(spec) = ClipSpec::parse(entry)? else {
         return Ok(None);
-    }
-    let ms_per_frame = spec.ms_per_frame.unwrap_or(150);
-    if spec.frames.len() > 16 || !(40..=10_000).contains(&ms_per_frame) {
-        return Err("expected at most 16 frames and 40 to 10000 ms per frame".into());
-    }
+    };
+    let ms_per_frame = spec.frame_ms();
     let mut frames = Vec::with_capacity(spec.frames.len());
     for name in spec.frames {
-        if !cache.contains_key(&name) && cache.len() >= MAX_UNIQUE_FRAMES {
+        if !cache.contains_key(&name) && cache.len() >= MAX_DISTINCT_SPRITES {
             return Err("pack exceeds the 64 distinct frame limit".into());
         }
         let image = cache.entry(name.clone()).or_insert_with(|| {
-            let bytes = pack.asset(&name, ".png", MAX_FRAME_BYTES).ok()?;
-            read_png(&bytes, Some((400, 520))).ok().map(Arc::new)
+            pack.sprite(&name).ok().map(Image::from).map(Arc::new)
         });
         let Some(image) = image else {
             return Err("expected a readable 400×520 PNG with visible pixels".into());
@@ -700,10 +693,6 @@ pub fn dump_frames(dir: &Path) -> std::io::Result<()> {
 
 pub fn decode_rgba(bytes: &[u8]) -> Rgba {
     decode_png(bytes).into()
-}
-
-pub fn decode_pack_rgba(bytes: &[u8], size: (u32, u32)) -> Option<Rgba> {
-    read_png(bytes, Some(size)).ok().map(Rgba::from)
 }
 
 impl From<Image> for Rgba {
@@ -1270,63 +1259,21 @@ fn scale_width(src: &Image, target_w: u32) -> Image {
 }
 
 fn decode_png(bytes: &[u8]) -> Image {
-    read_png(bytes, None).expect("embedded PNG")
+    hypermesh_visor::companion_packs::read_png(bytes, None)
+        .map(Image::from)
+        .expect("embedded PNG")
 }
 
-fn read_png(bytes: &[u8], custom_size: Option<(u32, u32)>) -> Result<Image, String> {
-    let input = std::io::Cursor::new(bytes);
-    let mut decoder = if custom_size.is_some() {
-        png::Decoder::new_with_limits(
-            input,
-            png::Limits {
-                bytes: 2 * 1024 * 1024,
-            },
-        )
-    } else {
-        png::Decoder::new(input)
-    };
-    decoder.set_ignore_text_chunk(true);
-    decoder.set_ignore_iccp_chunk(true);
-    decoder.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
-    let header = decoder
-        .read_header_info()
-        .map_err(|error| error.to_string())?;
-    if custom_size.is_some_and(|size| size != (header.width, header.height)) {
-        return Err("unexpected frame dimensions".into());
+impl From<Png> for Image {
+    fn from(image: Png) -> Self {
+        Self { w: image.width, h: image.height, rgba: image.rgba }
     }
-    let mut reader = decoder.read_info().map_err(|error| error.to_string())?;
-    if custom_size.is_some() && reader.info().animation_control.is_some() {
-        return Err("use individual PNG frames".into());
+}
+
+impl From<Png> for Rgba {
+    fn from(image: Png) -> Self {
+        Self { width: image.width, height: image.height, rgba: image.rgba }
     }
-    let mut buf = vec![0; reader.output_buffer_size()];
-    let info = reader
-        .next_frame(&mut buf)
-        .map_err(|error| error.to_string())?;
-    buf.truncate(info.buffer_size());
-    let rgba = match info.color_type {
-        png::ColorType::Rgba => buf,
-        png::ColorType::Rgb => {
-            let mut out = Vec::with_capacity(buf.len() / 3 * 4);
-            for px in buf.chunks_exact(3) {
-                out.extend_from_slice(&[px[0], px[1], px[2], 255]);
-            }
-            out
-        }
-        png::ColorType::Grayscale => buf.iter().flat_map(|&v| [v, v, v, 255]).collect(),
-        png::ColorType::GrayscaleAlpha => buf
-            .chunks_exact(2)
-            .flat_map(|px| [px[0], px[0], px[0], px[1]])
-            .collect(),
-        png::ColorType::Indexed => return Err("unexpanded indexed color".into()),
-    };
-    if custom_size.is_some() && !rgba.chunks_exact(4).any(|px| px[3] != 0) {
-        return Err("fully transparent frame".into());
-    }
-    Ok(Image {
-        w: info.width,
-        h: info.height,
-        rgba,
-    })
 }
 
 fn write_png(path: &Path, scene: &Scene) -> std::io::Result<()> {
@@ -1385,9 +1332,9 @@ mod tests {
             verb: Some("type".into()),
             mode: Some("mcp:editor".into()),
         };
-        assert!(sprites.select(&Signals::new(Mascot::Automation, false, &pose, None, None)));
+        assert!(sprites.select(&presentation::signals(Mascot::Automation, false, &pose, None, None)));
         assert_eq!(sprites.timing(Mascot::Automation), (100, 1, false));
-        assert!(sprites.select(&Signals::new(Mascot::Idle, true, &pose, None, None)));
+        assert!(sprites.select(&presentation::signals(Mascot::Idle, true, &pose, None, None)));
         assert_eq!(sprites.timing(Mascot::Idle), (150, 1, false));
         assert_eq!(sprites.frame(Mascot::Idle, 0).rgba, decode_png(rest).rgba);
         assert_eq!(sprites.label, "Paused");

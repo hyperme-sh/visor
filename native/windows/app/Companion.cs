@@ -14,6 +14,7 @@ internal sealed class Companion : Form
     private readonly NotifyIcon tray = new() { Icon = SystemIcons.Application, Text = "Hypermesh Visor", Visible = true };
     private readonly Icon companionIcon = LoadIcon();
     private Icon? statusIcon;
+    private Bitmap? lastPackFrame;
     private string iconKey = "";
     private CompactUsage? responseUsage;
     private readonly PointerOverlay overlay = new();
@@ -21,11 +22,14 @@ internal sealed class Companion : Form
     private McpConnectionsWindow? connectionsWindow;
     private FeedbackWindow? feedbackWindow;
     private readonly System.Windows.Forms.Timer timer = new() { Interval = 250 };
+    private readonly System.Windows.Forms.Timer packTimer = new() { Interval = 40 };
+    private readonly CompanionPacks packs = new();
     private readonly nuint marker = InputMonitor.CreateMarker();
     private readonly InputAuthority authority = new();
     private int inputPending;
     private long lastInput, approvalBaseline = -1;
     private bool polling, approving, resuming, closing, started, selecting;
+    private bool engineConnected, loadingPacks, packBusy;
     private ulong? selectedEpoch;
     private string purpose = "";
     private string phase = "off", message = "Desktop access is off", usage = "No response usage yet";
@@ -47,6 +51,10 @@ internal sealed class Companion : Form
         ContextMenuStrip menu = new();
         menu.Items.Add("Open controls", null, (_, _) => { Show(); WindowState = FormWindowState.Normal; Activate(); });
         menu.Items.Add("Choose session", null, async (_, _) => await ChooseSession());
+        var packMenu = new ToolStripMenuItem("Companion packs");
+        packMenu.DropDownItems.Add("Appearance", null, async (_, _) => await ChangePack("appearance"));
+        packMenu.DropDownItems.Add("Voice", null, async (_, _) => await ChangePack("voice"));
+        menu.Items.Add(packMenu);
         menu.Items.Add("Open session forum", null, async (_, _) => await OpenDestination(false));
         menu.Items.Add("Open workspace in VS Code", null, async (_, _) => await OpenDestination(true));
         menu.Items.Add("Session CLI in PowerShell", null, async (_, _) => await OpenTerminal(false));
@@ -97,6 +105,7 @@ internal sealed class Companion : Form
         Resize += (_, _) => { if (WindowState == FormWindowState.Minimized) Hide(); };
         Shown += (_, _) => Start();
         timer.Tick += async (_, _) => await Poll();
+        packTimer.Tick += (_, _) => PaintCompanion();
         SystemEvents.SessionSwitch += SessionChanged;
         SystemEvents.DisplaySettingsChanged += DisplayChanged;
         FormClosing += CloseCompanion;
@@ -224,7 +233,7 @@ internal sealed class Companion : Form
         authority.Revoke();
         Post(() => Pause("Desktop unavailable: elevated windows and secure desktops cannot be controlled"));
     }
-    private void Start()
+    private async void Start()
     {
         try
         {
@@ -235,6 +244,21 @@ internal sealed class Companion : Form
             timer.Start(); UpdateStatus();
         }
         catch { message = "Native engine unavailable; reinstall the complete unsigned bundle."; UpdateStatus(); }
+        if (!started) return;
+        loadingPacks = true;
+        try { await packs.Load(); }
+        catch { if (!closing) message = "Saved companion packs could not be loaded."; }
+        finally { loadingPacks = false; if (!closing) UpdateStatus(); }
+    }
+
+    private async Task ChangePack(string medium)
+    {
+        if (!started || closing || loadingPacks || packBusy) return;
+        packBusy = true;
+        Pause("Paused for companion pack selection");
+        try { await packs.Choose(this, medium); }
+        catch { if (!closing) message = "The companion pack could not be loaded or saved."; }
+        finally { packBusy = false; if (!closing) UpdateStatus(); }
     }
     private void PhysicalInput()
     {
@@ -272,7 +296,7 @@ internal sealed class Companion : Form
     }
     private async Task Approve()
     {
-        if (!started || selecting || approving || feedbackWindow is { IsDisposed: false } || trustWindow is { IsDisposed: false } || connectionsWindow is { IsDisposed: false } || consent.Selected is not { } session || monitor?.Healthy != true || !Win32.Interactive() || Win32.HeldInput()) return;
+        if (!started || selecting || approving || packBusy || feedbackWindow is { IsDisposed: false } || trustWindow is { IsDisposed: false } || connectionsWindow is { IsDisposed: false } || consent.Selected is not { } session || monitor?.Healthy != true || !Win32.Interactive() || Win32.HeldInput()) return;
         ulong? approvedEpoch = selectedEpoch;
         string approvedAction = phase == "paused" ? "resume" : "start";
         approving = true;
@@ -303,8 +327,10 @@ internal sealed class Companion : Form
             if (monitor?.Healthy != true && !consent.MonitorLost) MonitorLost();
             if (!Win32.Interactive() && consent.Allowed) Pause("Desktop session inactive; allow access again after returning");
             JsonElement? response = await Engine.Control("poll");
+            if (closing) return;
             responseUsage = null; usage = "No response usage yet";
-            if (!Success(response)) { Pause("Engine unavailable. Restart Visor."); return; }
+            engineConnected = Success(response);
+            if (!engineConnected) { Pause("Engine unavailable. Restart Visor."); return; }
             JsonElement body = Body(response);
             string? session = null;
             if (body.TryGetProperty("session", out JsonElement selected) && selected.ValueKind == JsonValueKind.Object && selected.TryGetProperty("id", out JsonElement id) && Guid.TryParseExact(id.GetString(), "D", out Guid parsed)) session = parsed.ToString();
@@ -313,12 +339,11 @@ internal sealed class Companion : Form
             if (purpose.Length > 160) purpose = purpose[..160] + "…";
             var automation = body.GetProperty("automation");
             phase = automation.GetProperty("phase").GetString() ?? "off";
+            packs.Observe(body, selected, automation, Now);
             selectedEpoch = automation.TryGetProperty("epoch", out var epochValue) && epochValue.TryGetUInt64(out ulong parsedEpoch) ? parsedEpoch : null;
             if (consent.Allowed && phase != "running") Pause("Automation paused; allow access to continue");
             responseUsage = session == null ? null : CompactUsage.Read(selected);
             usage = responseUsage?.Summary ?? "No response usage yet";
-            if (consent.Allowed && phase == "running" && Win32.GetCursorPos(out Win32.Point point)) overlay.Follow(point.X, point.Y);
-            else overlay.Hide();
             if (!resuming && consent.CanResume(Now, Win32.HeldInput()) && Win32.Interactive() && desktop.LayoutMatches && monitor?.Healthy == true && consent.Idle is { } ticket)
             {
                 resuming = true;
@@ -331,23 +356,41 @@ internal sealed class Companion : Form
             }
             UpdateStatus();
         }
-        catch { responseUsage = null; usage = "No response usage yet"; Pause("Engine response unavailable. Restart Visor."); }
+        catch { engineConnected = false; responseUsage = null; usage = "No response usage yet"; Pause("Engine response unavailable. Restart Visor."); }
         finally { polling = false; resuming = false; }
     }
     private static bool Success(JsonElement? response) => response is { } value && value.TryGetProperty("status", out JsonElement status) && status.GetInt32() is >= 200 and < 300;
     private static JsonElement Body(JsonElement? response) => response!.Value.GetProperty("body");
     private void UpdateStatus()
     {
+        if (closing) return;
         status.Text = $"{message}\nTask: {purpose}\nScreen capture and mouse/keyboard input require your approval.\n\nSession: {consent.Selected ?? "none"}\n{usage}";
-        allow.Enabled = started && !selecting && !approving && feedbackWindow is not { IsDisposed: false } && trustWindow is not { IsDisposed: false } && connectionsWindow is not { IsDisposed: false } && !consent.MonitorLost && consent.Selected != null;
-        string shownPhase = CompactUsage.DisplayPhase(phase, consent.Allowed);
-        tray.Text = $"Visor: {shownPhase}\n{usage}"[..Math.Min(63, $"Visor: {shownPhase}\n{usage}".Length)];
+        allow.Enabled = started && !selecting && !approving && !packBusy && feedbackWindow is not { IsDisposed: false } && trustWindow is not { IsDisposed: false } && connectionsWindow is not { IsDisposed: false } && !consent.MonitorLost && consent.Selected != null;
+        packTimer.Enabled = packs.Active;
+        PaintCompanion();
+    }
+
+    private void PaintCompanion()
+    {
+        if (closing) return;
+        bool allowed = consent.Allowed && authority.AllowedFor(consent.Selected);
+        string shownPhase = CompactUsage.DisplayPhase(phase, allowed);
+        var (art, cursor) = packs.Frame(engineConnected, shownPhase, packs.Active && Win32.ReduceMotion(),
+            Now, Interlocked.Read(ref lastInput));
+        if (allowed && phase == "running" && Win32.GetCursorPos(out Win32.Point point))
+            overlay.Follow(point.X, point.Y, cursor);
+        else
+            overlay.Hide();
+        string tip = $"Visor: {(packs.Active ? packs.Label : shownPhase)}\n{usage}";
+        tip = tip[..Math.Min(63, tip.Length)];
+        if (tray.Text != tip) tray.Text = tip;
         string nextIcon = $"{shownPhase}:{responseUsage}";
-        if (nextIcon != iconKey)
+        if (nextIcon != iconKey || !ReferenceEquals(art, lastPackFrame))
         {
-            Icon next = CompactUsage.Draw(companionIcon, shownPhase, responseUsage);
+            Icon next = CompactUsage.Draw(companionIcon, shownPhase, responseUsage, art);
             Icon? previous = statusIcon;
             tray.Icon = next; statusIcon = next; iconKey = nextIcon;
+            lastPackFrame = art;
             previous?.Dispose();
         }
     }
@@ -357,30 +400,47 @@ internal sealed class Companion : Form
     {
         if (closing) return;
         args.Cancel = true; closing = true;
-        Revoke(); consent.Stop(); timer.Stop(); tray.Visible = false;
+        Revoke(); consent.Stop(); timer.Stop(); packTimer.Stop(); packs.Dispose(); tray.Visible = false;
         trustWindow?.Close(); connectionsWindow?.Close(); feedbackWindow?.Close();
         monitor?.Dispose();
         try { await Task.Run(desktop.Release).WaitAsync(TimeSpan.FromSeconds(1)); } catch { }
         SystemEvents.SessionSwitch -= SessionChanged;
         SystemEvents.DisplaySettingsChanged -= DisplayChanged;
         if (started) await Engine.Control("stop");
-        overlay.Dispose(); tray.Dispose(); statusIcon?.Dispose(); companionIcon.Dispose(); timer.Dispose();
+        overlay.Dispose(); tray.Dispose(); statusIcon?.Dispose(); companionIcon.Dispose(); timer.Dispose(); packTimer.Dispose();
         Close();
     }
 }
 
 internal sealed class PointerOverlay : Form
 {
+    private readonly Image? bundled;
+    private Image? source;
+    private Image? copy;
     internal PointerOverlay()
     {
         FormBorderStyle = FormBorderStyle.None; ShowInTaskbar = false; TopMost = true;
         BackColor = Color.Magenta; TransparencyKey = Color.Magenta; Size = new Size(32, 32);
         string path = Path.Combine(AppContext.BaseDirectory, "companion", "automation_0_128.png");
-        if (File.Exists(path)) BackgroundImage = Image.FromFile(path);
+        if (File.Exists(path)) BackgroundImage = bundled = Image.FromFile(path);
         BackgroundImageLayout = ImageLayout.Zoom;
     }
     protected override bool ShowWithoutActivation => true;
     protected override CreateParams CreateParams { get { CreateParams value = base.CreateParams; value.ExStyle |= 0x80000 | 0x20 | 0x80 | 0x08000000; return value; } }
-    internal void Follow(int x, int y) { Location = new Point(x + 8, y + 8); if (!Visible) Show(); }
-    protected override void Dispose(bool disposing) { if (disposing) BackgroundImage?.Dispose(); base.Dispose(disposing); }
+    internal void Follow(int x, int y, Image? art)
+    {
+        if (!ReferenceEquals(art, source))
+        {
+            Image? next = art == null ? null : new Bitmap(art);
+            BackgroundImage = next ?? bundled;
+            copy?.Dispose(); copy = next; source = art;
+        }
+        Location = art == null ? new Point(x + 8, y + 8) : new Point(x - 10, y - 5);
+        if (!Visible) Show();
+    }
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing) { BackgroundImage = null; bundled?.Dispose(); copy?.Dispose(); }
+        base.Dispose(disposing);
+    }
 }

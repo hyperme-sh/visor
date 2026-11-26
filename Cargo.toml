@@ -66,6 +66,7 @@ jsonschema = { version = "0.58.6", default-features = false }
 http = "1"
 hyper = { version = "1", features = ["client", "http1"] }
 hyper-util = { version = "0.1", features = ["tokio"] }
+toml = "0.8"
 
 [target.'cfg(unix)'.dependencies]
 x11rb = { version = "0.13", features = ["xtest"], optional = true }

@@ -45,7 +45,7 @@ async fn independent_package_uses_owner_admission() {
     hypermesh_local_storage::create_dir(&root.0).unwrap();
     let project = root.0.join("project");
     std::fs::create_dir(&project).unwrap();
-    let target = project.join("sample.txt");
+    let target = project.join("sample.json");
     std::fs::write(&target, b"test input\n").unwrap();
     let socket = root.0.join("owner.sock");
     let listener = tokio::net::UnixListener::bind(&socket).unwrap();
@@ -467,6 +467,52 @@ async fn independent_package_uses_owner_admission() {
             .status(),
         StatusCode::CREATED
     );
+    let lint = |file: &str| json!({"workspace":project,"file":file});
+    let lint_path = "/workspace-lint";
+    let lint_input = b"{\"x\":1,\n \"x\":2}\n";
+    std::fs::write(&target, lint_input).unwrap();
+    *lock(&state.selected_session) = Some(session);
+    state.selected_approved.store(true, Ordering::SeqCst);
+    assert_eq!(
+        request(&public, "POST", lint_path, lint("sample.json")).await.status(),
+        StatusCode::FORBIDDEN
+    );
+    let report = request(&companion, "POST", lint_path, lint("sample.json")).await;
+    assert_eq!(report.status(), StatusCode::BAD_REQUEST);
+    assert!(body(report).await["error"]
+        .as_str().unwrap().contains("Enable the JSON lint plugin"));
+    let manifest = packages.join("json-lint/manifest.json");
+    let digest = digest(&std::fs::read(&manifest).unwrap());
+    let grant = json!({"manifest":manifest,"manifest_sha256":digest,"tool":"lint-json","target":target});
+    assert_eq!(
+        request(&companion, "POST", &list_path, grant).await.status(),
+        StatusCode::CREATED
+    );
+    let before = admitted.load(Ordering::Acquire);
+    for file in ["../sample.json", "/sample.json", "a/../sample.json"] {
+        assert_eq!(
+            request(&companion, "POST", lint_path, lint(file)).await.status(),
+            StatusCode::BAD_REQUEST
+        );
+    }
+    assert_eq!(
+        request(&companion, "POST", lint_path, lint("other.json")).await.status(),
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(admitted.load(Ordering::Acquire), before);
+    let report = body(request(&companion, "POST", lint_path, lint("sample.json")).await).await;
+    let hash = format!("{:x}", Sha256::digest(lint_input));
+    assert_eq!(report, json!({"result":{
+        "file":"sample.json", "runtime":"local-stdio", "linter_version":"0.1.0", "config":"json-strict-v1",
+        "content_sha256":hash, "display_sha256":hash, "truncated":false,
+        "diagnostics":[{"line":2,"column":2,"rule":"duplicate-key","severity":"warning","message":"Duplicate JSON object key"}]
+    }}));
+    assert_eq!(admitted.load(Ordering::Acquire), before + 1);
+    allow.store(false, Ordering::Release);
+    let refused = body(request(&companion, "POST", lint_path, lint("sample.json")).await).await;
+    assert_eq!(refused["error"]["code"], "read_refused");
+    assert_eq!(admitted.load(Ordering::Acquire), before + 1);
+    allow.store(true, Ordering::Release);
     lock(&state.automation).pause();
     assert_eq!(
         request(&companion, "POST", &call_path, call(&target))

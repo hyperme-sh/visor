@@ -131,6 +131,7 @@ impl Broker {
             state,
             consent,
             cancelled: AtomicBool::new(false),
+            requires_selection: false,
         });
         Ok(Self {
             _cancel: Cancel(Arc::clone(&control)),

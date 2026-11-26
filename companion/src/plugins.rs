@@ -8,7 +8,8 @@ const USAGE: &str = "hypermesh-companion --plugins list\n\
   --plugins enable ID INSTALLED_REVISION\n\
   --plugins disable ID INSTALLED_REVISION\n\
   --plugins remove ID INSTALLED_REVISION\n\
-  --plugins grant SESSION ID INSTALLED_REVISION TOOL TARGET";
+  --plugins grant SESSION ID INSTALLED_REVISION TOOL TARGET\n\
+  --plugins grant-local SESSION MANIFEST MANIFEST_SHA256 TOOL TARGET";
 
 pub fn run(args: Vec<String>) -> Result<(), String> {
     let parts: Vec<&str> = args.iter().map(String::as_str).collect();
@@ -49,6 +50,16 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
                 json!({
                     "plugin_id":id,"revision":revision,"tool":tool,"target":target
                 }),
+            )
+        }
+        ["grant-local", session, manifest, digest, tool, target]
+            if uuid::Uuid::parse_str(session).is_ok() =>
+        {
+            let session = uuid::Uuid::parse_str(session).map_err(|_| "Invalid session")?;
+            (
+                "POST",
+                format!("/session/{session}/plugins"),
+                json!({"manifest":manifest,"manifest_sha256":digest,"tool":tool,"target":target}),
             )
         }
         ["--help" | "-h"] => {

@@ -1,0 +1,16 @@
+[package]
+name = "visor-json-lint"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+[dependencies]
+visor-plugin-sdk = { path = "../sdk" }
+base64 = "0.22"
+serde = "1"
+serde_json = "1"
+
+[profile.release]
+strip = true
+
+[workspace]

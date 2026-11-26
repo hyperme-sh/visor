@@ -1,6 +1,7 @@
 //! Plugin control stays on the same private companion transport as workspace reads.
 mod github;
 mod github_code;
+mod lint;
 pub(super) use github_code::CodeAuditEntry;
 
 use super::*;
@@ -18,6 +19,7 @@ pub(super) fn routes() -> Router<Arc<AppState>> {
     Router::new()
         .route("/plugins", get(installed_list).post(install))
         .route("/plugins/inspect", post(inspect))
+        .route("/workspace-lint", post(lint::run))
         .route("/plugins/:plugin", delete(remove).put(set_enabled))
         .route("/session/:id/plugins", get(list).post(enable))
         .route("/session/:id/plugins/:plugin", delete(disable))
@@ -363,6 +365,16 @@ async fn call(
     let grant = lock(&state.plugins)
         .get(id, &plugin_id)
         .ok_or_else(ApiError::missing)?;
+    call_workspace(state, id, grant, body, None)
+}
+
+fn call_workspace(
+    state: Arc<AppState>,
+    id: Uuid,
+    grant: Arc<plugin::Grant>,
+    body: reads::ReadRequest,
+    lint_file: Option<String>,
+) -> Result<Response, ApiError> {
     if body.session_id != id
         || !matches!(&grant.target, plugin::Target::Workspace(path) if *path == body.target)
     {
@@ -395,12 +407,13 @@ async fn call(
             state,
             consent,
             cancelled: AtomicBool::new(false),
+            requires_selection: lint_file.is_some(),
         });
         let _cancel = Cancel(Arc::clone(&control));
         let result = tokio::select! {
             biased;
             _ = tx.closed() => return,
-            value = execute(&control, body, limit, permit, invocation) => value,
+            value = execute(&control, body, limit, permit, invocation, lint_file) => value,
         };
         let value = match result {
             Ok(result) => json!({"result":result}),
@@ -427,11 +440,18 @@ struct Control {
     state: Arc<AppState>,
     consent: tasks::Consent,
     cancelled: AtomicBool,
+    requires_selection: bool,
 }
 
 impl Control {
+    fn selection_live(&self) -> bool {
+        let selected = *lock(&self.state.selected_session);
+        selected == Some(self.consent.session) && self.state.selected_approved.load(Ordering::SeqCst)
+    }
+
     fn live(&self) -> bool {
-        !self.cancelled.load(Ordering::Acquire)
+        (!self.requires_selection || self.selection_live())
+            && !self.cancelled.load(Ordering::Acquire)
             && self.grant.live()
             && self.state.has_session(self.consent.session)
             && self.consent.matches(&lock(&self.state.automation))
@@ -451,6 +471,7 @@ async fn execute(
     limit: Duration,
     permit: tokio::sync::SemaphorePermit<'static>,
     invocation: plugin::Invocation,
+    lint_file: Option<String>,
 ) -> Result<Value, plugin::Error> {
     let deadline = Instant::now() + limit;
     let runtime = tokio::runtime::Handle::current();
@@ -483,7 +504,11 @@ async fn execute(
     let staging = control.state.mcp_dir.join("plugin-scratch");
     let input =
         json!({"content_base64":base64::engine::general_purpose::STANDARD.encode(&read.bytes)});
-    run_package(control, &staging, input, deadline, live).await
+    let result = run_package(control, &staging, input, deadline, live).await?;
+    match lint_file {
+        Some(file) => lint::report(file, &read.bytes, &control.grant.package.metadata(), result),
+        None => Ok(result),
+    }
 }
 
 async fn run_package(

@@ -118,6 +118,7 @@ try {
     }
     if ($RemoteSsh) {
         $settings['remote.SSH.configFile'] = $sshConfig
+        $settings['remote.SSH.remotePlatform'] = @{ $remoteName = 'linux' }
         $settings['remote.SSH.showLoginTerminal'] = $false
         $settings['remote.SSH.useLocalServer'] = $false
     }

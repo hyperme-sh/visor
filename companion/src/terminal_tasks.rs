@@ -5,8 +5,10 @@ use std::io::{Read, Write};
 use std::time::Duration;
 use uuid::Uuid;
 
+mod input;
+
 const ENDPOINT: &str = "/terminal-task";
-const USAGE: &str = "Usage: hypermesh-companion --terminal-task WORKSPACE context | run REVISION | watch ID [CURSOR] | cancel ID | request";
+const USAGE: &str = "Usage: hypermesh-companion --terminal-task WORKSPACE context | run REVISION | watch ID [CURSOR] | interact ID [CURSOR] [--take-over] | cancel ID | request";
 
 fn exchange(workspace: &str, operation: Value) -> Result<Value, String> {
     crate::visor::trust_request(
@@ -50,8 +52,15 @@ impl OutputDecoder {
     }
 }
 
-fn watch(workspace: &str, scope: &Value, id: Uuid, mut cursor: u64) -> Result<bool, String> {
+fn watch(
+    workspace: &str,
+    scope: &Value,
+    id: Uuid,
+    mut cursor: u64,
+    mut input: Option<&mut dyn input::Attachment>,
+) -> Result<bool, String> {
     let mut prior_status = String::new();
+    let mut prior_owner: Option<Value> = None;
     let mut decoder = OutputDecoder::default();
     loop {
         let mut request = action(scope, "read", id);
@@ -73,6 +82,18 @@ fn watch(workspace: &str, scope: &Value, id: Uuid, mut cursor: u64) -> Result<bo
             );
             prior_status = status.to_owned();
         }
+        let owner = &page["terminal"]["owner"];
+        let changed = prior_owner
+            .as_ref()
+            .is_none_or(|previous| previous != &owner["id"]);
+        if page["terminal"].is_object() && changed {
+            eprintln!(
+                "Input owner: {} · last ack {}",
+                owner["client"].as_str().unwrap_or("none"),
+                owner["ack"]["sequence"]
+            );
+            prior_owner = Some(owner["id"].clone());
+        }
         let output = STANDARD
             .decode(
                 page["output_base64"]
@@ -88,6 +109,14 @@ fn watch(workspace: &str, scope: &Value, id: Uuid, mut cursor: u64) -> Result<bo
             .and_then(|_| stdout.flush())
             .map_err(|_| "Could not write task output")?;
         drop(stdout);
+        if status == "running" {
+            if let Some(attachment) = input.as_deref_mut() {
+                if !attachment.advance(&page)? {
+                    eprintln!("Output cursor {cursor}");
+                    return Ok(true);
+                }
+            }
+        }
         if page["more"] != true {
             if status != "running" {
                 if page["truncated"] == true {
@@ -131,7 +160,21 @@ pub(crate) fn run(args: Vec<String>) -> Result<bool, String> {
             let mut request = action(&scope, "start", id);
             request["revision"] = json!(revision);
             exchange(workspace, request)?;
-            return watch(workspace, &scope, id, 0);
+            return watch(workspace, &scope, id, 0, None);
+        }
+        ("interact", [id, options @ ..]) => {
+            let id = Uuid::parse_str(id).map_err(|_| "Invalid task ID")?;
+            let (options, take_over) = match options.split_last() {
+                Some((flag, rest)) if flag == "--take-over" => (rest, true),
+                _ => (options, false),
+            };
+            let cursor = match options {
+                [] => 0,
+                [value] => value.parse().map_err(|_| "Invalid output cursor")?,
+                _ => return Err(USAGE.into()),
+            };
+            let scope = exchange(workspace, json!({"type":"context"}))?;
+            return input::attach(workspace, &scope, id, cursor, take_over);
         }
         ("watch" | "cancel", [id, ..])
             if rest.len() == 1 || command == "watch" && rest.len() == 2 =>
@@ -144,7 +187,7 @@ pub(crate) fn run(args: Vec<String>) -> Result<bool, String> {
                     .map(|v| v.parse().map_err(|_| "Invalid cursor"))
                     .transpose()?
                     .unwrap_or(0);
-                return watch(workspace, &scope, id, cursor);
+                return watch(workspace, &scope, id, cursor, None);
             }
             println!("{}", exchange(workspace, action(&scope, "cancel", id))?);
         }

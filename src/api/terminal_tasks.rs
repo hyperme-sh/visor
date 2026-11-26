@@ -6,6 +6,9 @@ use sha2::{Digest, Sha256};
 use std::{io::Read, process::Stdio};
 use tokio::io::AsyncReadExt;
 
+mod interactive;
+use interactive::{ControlRequest, Master, Terminal};
+
 const OUTPUT_LIMIT: usize = 128 * 1024;
 const PAGE_SIZE: usize = 16 * 1024;
 const MAX_RUNS: usize = 16;
@@ -44,6 +47,8 @@ struct Task {
     command: PathBuf,
     args: Vec<String>,
     timeout_seconds: u64,
+    #[serde(default)]
+    interactive: bool,
 }
 
 struct Declaration {
@@ -124,6 +129,14 @@ enum Operation {
         binding: String,
         id: Uuid,
     },
+    Control {
+        boot: Uuid,
+        session: Uuid,
+        binding: String,
+        id: Uuid,
+        terminal: Uuid,
+        request: ControlRequest,
+    },
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -173,6 +186,8 @@ struct Run {
     exit_code: Option<i32>,
     output: Vec<u8>,
     discarded_output: usize,
+    terminal: Option<Terminal>,
+    input_consent: Option<tasks::Consent>,
     truncated: bool,
     cancel: bool,
 }
@@ -198,6 +213,7 @@ impl Run {
             "access": if allowed { "ready" } else { "paused" },
             "cursor": end, "more": end < self.output.len(), "truncated": self.truncated,
             "output_base64": STANDARD.encode(output),
+            "terminal": self.terminal.as_ref().map(|terminal| terminal.view(allowed && self.active() && !self.cancel)),
         }))
     }
 }
@@ -249,6 +265,7 @@ pub(super) async fn exchange(
                     "revision": d.revision, "cwd": d.task.cwd, "command": d.task.command,
                     "args": d.task.args, "timeout_seconds": d.task.timeout_seconds,
                     "environment": "clean",
+                    "interactive": d.task.interactive,
                 })
             });
             Ok(Json(json!({
@@ -278,18 +295,18 @@ pub(super) async fn exchange(
                 }
                 return Ok(Json(run.page(id, 0, consent.is_some())?));
             }
+            let consent =
+                consent.ok_or_else(|| ApiError::forbidden("Local terminal access is paused"))?;
             if records.len() >= MAX_RUNS || records.values().any(Run::active) {
                 return Err(ApiError::conflict("Terminal task capacity reached"));
             }
-            let consent =
-                consent.ok_or_else(|| ApiError::forbidden("Local terminal access is paused"))?;
             let declared = declaration(&state.mcp_dir, &body.workspace)
                 .map_err(|_| ApiError::forbidden("Terminal task declaration refused"))?
                 .filter(|task| task.revision == revision)
                 .ok_or_else(|| {
                     ApiError::conflict("Review the current terminal task declaration")
                 })?;
-            let (child, group) = {
+            let process = {
                 let gate = lock(&state.automation);
                 if !consent.matches(&gate) || !state.selected_approved.load(Ordering::SeqCst) {
                     return Err(ApiError::forbidden("Local terminal access is paused"));
@@ -304,6 +321,8 @@ pub(super) async fn exchange(
                 exit_code: None,
                 output: Vec::new(),
                 discarded_output: 0,
+                terminal: process.master.clone().map(Terminal::new),
+                input_consent: declared.task.interactive.then_some(consent),
                 truncated: false,
                 cancel: false,
             };
@@ -317,8 +336,7 @@ pub(super) async fn exchange(
                 authority,
                 consent,
                 declared,
-                child,
-                group,
+                process,
             ));
             Ok(Json(response))
         }
@@ -351,10 +369,47 @@ pub(super) async fn exchange(
             run.cancel = true;
             Ok(Json(run.page(id, 0, consent.is_some())?))
         }
+        Operation::Control {
+            boot,
+            session,
+            binding,
+            id,
+            terminal,
+            request,
+        } => {
+            require_binding(store, &authority, boot, session, &binding)?;
+            let revision = declaration(&state.mcp_dir, &body.workspace)
+                .map_err(|_| ApiError::forbidden("Terminal task declaration refused"))?
+                .ok_or_else(|| ApiError::forbidden("Terminal input declaration removed"))?
+                .revision;
+            let mut records = lock(&store.records);
+            let run = connected_run(records.get_mut(&id), &authority)?;
+            let gate = lock(&state.automation);
+            if !run.active()
+                || run.cancel
+                || run.revision != revision
+                || !state.selected_approved.load(Ordering::SeqCst)
+                || !run.input_consent.is_some_and(|grant| grant.matches(&gate))
+            {
+                return Err(ApiError::forbidden("Terminal input access unavailable"));
+            }
+            let terminal = run
+                .terminal
+                .as_mut()
+                .filter(|tty| tty.id() == terminal)
+                .ok_or_else(|| ApiError::forbidden("Current interactive terminal required"))?;
+            Ok(Json(terminal.control(request)?))
+        }
     }
 }
 
-fn spawn(task: &Task) -> Result<(tokio::process::Child, ProcessGroup), ApiError> {
+struct Process {
+    child: tokio::process::Child,
+    group: ProcessGroup,
+    master: Option<Arc<Master>>,
+}
+
+fn spawn(task: &Task) -> Result<Process, ApiError> {
     let mut command = tokio::process::Command::new(&task.command);
     command
         .args(&task.args)
@@ -362,16 +417,28 @@ fn spawn(task: &Task) -> Result<(tokio::process::Child, ProcessGroup), ApiError>
         .env_clear()
         .env("PATH", "/usr/bin:/bin")
         .env("LANG", "C")
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .kill_on_drop(true)
-        .process_group(0);
+        .kill_on_drop(true);
+    let master = if task.interactive {
+        Some(Master::attach(&mut command).map_err(|_| {
+            ApiError::unavailable("Could not open a private terminal for this task")
+        })?)
+    } else {
+        command
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .process_group(0);
+        None
+    };
     let child = command
         .spawn()
         .map_err(|_| ApiError::unavailable("Could not start the declared terminal task"))?;
     let group = ProcessGroup(child.id().expect("spawned child has an ID") as i32);
-    Ok((child, group))
+    Ok(Process {
+        child,
+        group,
+        master,
+    })
 }
 
 struct ProcessGroup(i32);
@@ -431,14 +498,18 @@ async fn supervise(
     scope: Authority,
     consent: tasks::Consent,
     declared: Declaration,
-    mut child: tokio::process::Child,
-    group: ProcessGroup,
+    process: Process,
 ) {
-    let mut stdout = child.stdout.take().expect("configured stdout");
-    let mut stderr = child.stderr.take().expect("configured stderr");
+    let Process {
+        mut child,
+        master,
+        group,
+    } = process;
+    let mut stdout = child.stdout.take();
+    let mut stderr = child.stderr.take();
     let mut out = [0; 4096];
     let mut err = [0; 4096];
-    let (mut out_open, mut err_open) = (true, true);
+    let (mut out_open, mut err_open) = (true, stderr.is_some());
     let mut interval = tokio::time::interval(TICK);
     let deadline = tokio::time::sleep(Duration::from_secs(declared.task.timeout_seconds));
     let revoke = wait_for_revocation(&state, &workspace, &scope, &declared.revision);
@@ -466,14 +537,20 @@ async fn supervise(
                     }
                 }
             }
-            read = stdout.read(&mut out), if out_open => match read {
+            read = async {
+                if let Some(pty) = &master {
+                    pty.read(&mut out).await
+                } else {
+                    stdout.as_mut().expect("configured stdout").read(&mut out).await
+                }
+            }, if out_open => match read {
                 Ok(0) => out_open = false,
                 Ok(count) => if let Some(run) = lock(&state.terminal_tasks.records).get_mut(&id) {
                     append_output(run, &out[..count]);
                 },
                 Err(_) => break "failed",
             },
-            read = stderr.read(&mut err), if err_open => match read {
+            read = async { stderr.as_mut().expect("configured stderr").read(&mut err).await }, if err_open => match read {
                 Ok(0) => err_open = false,
                 Ok(count) => if let Some(run) = lock(&state.terminal_tasks.records).get_mut(&id) {
                     append_output(run, &err[..count]);
@@ -500,6 +577,9 @@ async fn supervise(
         if status == "revoked" {
             run.discarded_output = run.output.len();
             run.output.clear();
+        }
+        if let Some(terminal) = run.terminal.as_mut() {
+            terminal.close();
         }
         run.status = status;
         run.exit_code = code;
@@ -536,6 +616,8 @@ mod tests {
             exit_code: None,
             output: Vec::new(),
             discarded_output: 32,
+            terminal: None,
+            input_consent: None,
             truncated: false,
             cancel: false,
         };
@@ -608,7 +690,7 @@ mod tests {
             .control_automation_at(Control::Start, true, Some(session), Some(epoch))
             .is_ok());
         let config = directory.join("terminal-task.json");
-        let write_task = |command: &str, args: &[&str]| {
+        let write_task = |command: &str, args: &[&str], interactive: bool| {
             if config.exists() {
                 fs::remove_file(&config).unwrap();
             }
@@ -618,11 +700,11 @@ mod tests {
                 output,
                 "{}",
                 json!({"workspace":workspace,"cwd":cwd,
-                "command":command,"args":args,"timeout_seconds":5})
+                "command":command,"args":args,"timeout_seconds":10,"interactive":interactive})
             )
             .unwrap();
         };
-        write_task("/bin/sh", &["-c", "pwd; printf x >> launches"]);
+        write_task("/bin/sh", &["-c", "pwd; printf x >> launches"], false);
         let app = companion_router(state.clone());
         let network = router(state.clone());
         assert_eq!(
@@ -679,12 +761,34 @@ mod tests {
         assert_eq!(attached["exit_code"], finished["exit_code"]);
         assert_eq!(attached["output_base64"], "");
 
-        write_task("/bin/sleep", &["10"]);
+        write_task("/bin/sleep", &["10"], false);
         let (_, updated) = call(&app, &workspace, json!({"type":"context"})).await;
         let active = Uuid::new_v4();
         let mut start = base("start", active);
         start["revision"] = updated["task"]["revision"].clone();
         assert_eq!(call(&app, &workspace, start).await.0, StatusCode::OK);
+        let control = |id: Uuid, terminal: Value, request: Value| {
+            let mut body = base("control", id);
+            body["terminal"] = terminal;
+            body["request"] = request;
+            body
+        };
+        let editor = Uuid::new_v4();
+        let claim = |owner: Uuid, client, previous: Value| json!({"type":"claim","owner":owner,"client":client,"expected_owner":previous});
+        assert_eq!(
+            call(
+                &app,
+                &workspace,
+                control(
+                    active,
+                    json!(Uuid::new_v4()),
+                    claim(editor, "editor", Value::Null)
+                )
+            )
+            .await
+            .0,
+            StatusCode::FORBIDDEN
+        );
         assert_eq!(
             call(&app, &workspace, base("cancel", active)).await.0,
             StatusCode::OK
@@ -702,15 +806,166 @@ mod tests {
         })
         .await
         .unwrap();
+        write_task(
+            "/bin/sh",
+            &[
+                "-c",
+                r#"printf 'ready\n'; IFS= read -r line; printf 'first=%s\n' "$line"; stty size; IFS= read -r again; printf 'second=%s\n' "$again"; sleep 10"#,
+            ],
+            true,
+        );
+        let (_, interactive) = call(&app, &workspace, json!({"type":"context"})).await;
+        let active = Uuid::new_v4();
+        let mut start = base("start", active);
+        start["revision"] = interactive["task"]["revision"].clone();
+        let (status, page) = call(&app, &workspace, start).await;
+        assert_eq!(status, StatusCode::OK, "{page}");
+        let terminal = page["terminal"]["id"].clone();
+        assert_eq!(page["terminal"]["input_available"], true);
+        let mut watch = base("read", active);
+        watch["cursor"] = json!(0);
+        let tty = |request| control(active, terminal.clone(), request);
+        let cli = Uuid::new_v4();
+        let (status, accepted) =
+            call(&app, &workspace, tty(claim(editor, "editor", Value::Null))).await;
+        assert_eq!(status, StatusCode::OK, "{accepted}");
+        let observed = call(&app, &workspace, watch.clone()).await.1;
+        assert_eq!(observed["terminal"]["owner"]["id"], json!(editor));
+        assert!(observed["terminal"]["owner"].get("lease").is_none());
+        let lease = accepted["lease"].clone();
+        let resize = json!({"type":"resize","lease":lease,"sequence":1,"rows":37,"cols":101});
+        let (status, ack) = call(&app, &workspace, tty(resize)).await;
+        assert_eq!(status, StatusCode::OK, "{ack}");
+        assert_eq!(ack["ack"]["resized"], true);
+        let input = json!({"type":"input","lease":lease,"sequence":2,"data_base64":STANDARD.encode(b"sample\n")});
+        let (status, ack) = call(&app, &workspace, tty(input.clone())).await;
+        assert_eq!(status, StatusCode::OK, "{ack}");
+        assert_eq!(ack["ack"]["accepted_bytes"], 7);
+        assert_eq!(
+            call(&app, &workspace, tty(input)).await,
+            (StatusCode::OK, ack)
+        );
+        assert_eq!(
+            call(&app, &workspace, tty(claim(cli, "cli", Value::Null)))
+                .await
+                .0,
+            StatusCode::CONFLICT
+        );
+        let (status, takeover) =
+            call(&app, &workspace, tty(claim(cli, "cli", json!(editor)))).await;
+        assert_eq!(status, StatusCode::OK, "{takeover}");
+        assert_eq!(takeover["terminal"]["owner"]["client"], "cli");
+        assert_eq!(takeover["terminal"]["owner"]["ack"], Value::Null);
+        let stale = json!({"type":"input","lease":lease,"sequence":3,"data_base64":STANDARD.encode(b"stale\n")});
+        assert_eq!(
+            call(&app, &workspace, tty(stale)).await.0,
+            StatusCode::FORBIDDEN
+        );
+        let cli_lease = takeover["lease"].clone();
+        let send = |sequence, text: &str| json!({"type":"input","lease":cli_lease,"sequence":sequence,"data_base64":STANDARD.encode(text)});
+        assert_eq!(
+            call(&app, &workspace, tty(send(1, "finish\n"))).await.0,
+            StatusCode::OK
+        );
+        let text = tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                let (status, result) = call(&app, &workspace, watch.clone()).await;
+                assert_eq!(status, StatusCode::OK, "{result}");
+                let bytes = STANDARD
+                    .decode(result["output_base64"].as_str().unwrap())
+                    .unwrap();
+                let text = String::from_utf8(bytes).unwrap();
+                if text.contains("second=") {
+                    break text;
+                }
+                tokio::time::sleep(TICK).await;
+            }
+        })
+        .await
+        .unwrap();
+        assert!(
+            text.contains("first=sample")
+                && text.contains("37 101")
+                && text.contains("second=finish"),
+            "{text}"
+        );
+        assert!(!text.contains("stale"));
         assert!(state.control_automation(Control::Pause, true, None).is_ok());
+        assert_eq!(
+            call(&app, &workspace, tty(send(2, "paused\n"))).await.0,
+            StatusCode::FORBIDDEN
+        );
         let (_, paused) = call(&app, &workspace, read.clone()).await;
         assert_eq!(paused["access"], "paused");
+        tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                let (_, page) = call(&app, &workspace, watch.clone()).await;
+                if page["status"] == "paused" {
+                    assert_eq!(page["terminal"]["input_available"], false);
+                    assert_eq!(page["terminal"]["owner"], Value::Null);
+                    break;
+                }
+                tokio::time::sleep(TICK).await;
+            }
+        })
+        .await
+        .unwrap();
         let mut refused = base("start", Uuid::new_v4());
         refused["revision"] = updated["task"]["revision"].clone();
         assert_eq!(
             call(&app, &workspace, refused).await.0,
             StatusCode::FORBIDDEN
         );
+        let epoch = lock(&state.automation).epoch();
+        assert!(state
+            .control_automation_at(Control::Resume, true, Some(session), Some(epoch))
+            .is_ok());
+        let second = Uuid::new_v4();
+        let mut start = base("start", second);
+        start["revision"] = interactive["task"]["revision"].clone();
+        let (status, page) = call(&app, &workspace, start).await;
+        assert_eq!(status, StatusCode::OK, "{page}");
+        let tty = |request| control(second, page["terminal"]["id"].clone(), request);
+        let (_, granted) = call(&app, &workspace, tty(claim(editor, "editor", Value::Null))).await;
+        let first_lease = granted["lease"].clone();
+        let (status, detached) = call(
+            &app,
+            &workspace,
+            tty(json!({"type":"release","lease":first_lease})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{detached}");
+        assert_eq!(detached["terminal"]["owner"], Value::Null);
+        let mut reread = base("read", second);
+        reread["cursor"] = json!(0);
+        assert_eq!(
+            call(&app, &workspace, reread.clone()).await.1["status"],
+            "running"
+        );
+        let (status, reattached) =
+            call(&app, &workspace, tty(claim(cli, "cli", Value::Null))).await;
+        assert_eq!(status, StatusCode::OK, "{reattached}");
+        assert_eq!(reattached["terminal"]["owner"]["ack"], Value::Null);
+        let (status, requested) = call(&app, &workspace, base("cancel", second)).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(requested["terminal"]["input_available"], false);
+        let queued =
+            json!({"type":"input","lease":reattached["lease"],"sequence":1,"data_base64":"YQ=="});
+        assert_eq!(
+            call(&app, &workspace, tty(queued)).await.0,
+            StatusCode::FORBIDDEN
+        );
+        tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                let (_, page) = call(&app, &workspace, reread.clone()).await;
+                if page["status"] == "cancelled" {
+                    break;
+                }
+                tokio::time::sleep(TICK).await;
+            }
+        })
+        .await
+        .unwrap();
         lock(&state.sessions).remove(&session);
         assert_eq!(call(&app, &workspace, read).await.0, StatusCode::FORBIDDEN);
         fixture.abort();

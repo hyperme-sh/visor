@@ -21,7 +21,7 @@ existing canonical working directory inside it.
 ```
 
 The declaration is local owner configuration. Visor runs the executable
-directly with the listed arguments, closed standard input, and a fresh
+directly with the listed arguments and a fresh
 environment containing only `PATH=/usr/bin:/bin` and `LANG=C`. The command
 runs as the local Visor user with that user's normal OS permissions. Declare
 only commands you trust to run with those permissions.
@@ -55,3 +55,34 @@ daemon instance, access and task revision. `start`, `read`, and `cancel` carry
 that scope and the task ID. `start` also carries the reviewed revision.
 `read` returns paged output and the next cursor. Reattach with `read`; a repeat
 of the same start ID and revision on the same instance returns the existing run.
+
+## Interactive input
+
+Add `"interactive": true` to the owner-only declaration to give the command
+a private pseudo-terminal. The default declaration keeps its output-only mode.
+The interactive command gets `TERM=dumb` in addition to the clean environment.
+It can prompt for input and react to terminal resizing.
+
+In VS Code choose **Attach with input**, enter the task ID and optional
+cursor, and confirm the claim or transfer. **Attach to task** follows output
+as a viewer. Either view can stay open while input moves to another client.
+
+From a local terminal, run:
+
+```sh
+hypermesh-companion --terminal-task /home/developer/project interact TASK_ID 0
+hypermesh-companion --terminal-task /home/developer/project interact TASK_ID 0 --take-over
+```
+
+The input attachment forwards local terminal dimensions and keystrokes.
+Ctrl+] detaches and prints the output cursor. Closing the VS Code terminal
+also detaches. The task can continue while detached. Use **Cancel task**
+or the CLI's `cancel` action to stop it.
+
+Visor grants input to one attachment for the exact task and terminal. The
+terminal view shows the current owner and last acknowledgement. Each input
+or resize operation uses the current grant and a sequence number. Acknowledging
+input means the terminal accepted the reported bytes. An interrupted client
+reattaches by ID and cursor. The clients discard unsent keystrokes when an
+attachment loses input access. Visor checks the current grant for every
+operation and closes the terminal on pause, revocation, or cancellation.

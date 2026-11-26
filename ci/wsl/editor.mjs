@@ -143,7 +143,7 @@ function waitForTask(expected, previous) {
 
 try {
   await connect();
-  const workspaceTitle = device ? '[ssh]' : remote.toLowerCase();
+  const workspaceTitle = device ? `[ssh: ${remote.toLowerCase()}]` : remote.toLowerCase();
   await until('the remote workspace title', () => evaluate(
     `document.title.toLowerCase().includes(${JSON.stringify(workspaceTitle)})`,
   ), 120_000);

@@ -35,6 +35,7 @@ try {
     if ($revisions -notcontains "visor=$env:GITHUB_SHA") { throw 'WSL fixture source revision differs from this CI job' }
     $ownerArgs = @('--distribution', $distro, '--user', 'root', '--exec', '/usr/bin/python3')
     if ($RemoteSsh) {
+        $ssh = (Get-Command ssh.exe -CommandType Application -TotalCount 1).Source
         $identity = Join-Path $fixture 'client_key'
         & ssh-keygen.exe -q -t ed25519 -N '' -f $identity
         if ($LASTEXITCODE -ne 0) { throw 'Fixture SSH client key generation failed' }
@@ -85,7 +86,7 @@ try {
         ) | Set-Content -LiteralPath $sshConfig -Encoding ascii
         $connected = $false
         for ($attempt = 0; $attempt -lt 15; $attempt++) {
-            $guestDistro = & ssh.exe -F $sshConfig -o ConnectTimeout=4 $remoteName printenv WSL_DISTRO_NAME 2>$null
+            $guestDistro = & $ssh -F $sshConfig -o ConnectTimeout=4 $remoteName printenv WSL_DISTRO_NAME 2>$null
             if ($LASTEXITCODE -eq 0 -and $guestDistro -eq $distro) {
                 $connected = $true
                 break
@@ -122,7 +123,7 @@ try {
     if ($RemoteSsh) {
         $settings['remote.SSH.configFile'] = $sshConfig
         $settings['remote.SSH.remotePlatform'] = @{ $remoteName = 'linux' }
-        $settings['remote.SSH.path'] = (Get-Command ssh.exe -CommandType Application).Source
+        $settings['remote.SSH.path'] = $ssh
         $settings['remote.SSH.showLoginTerminal'] = $false
         $settings['remote.SSH.useLocalServer'] = $false
         $settings['remote.SSH.useExecServer'] = $false
@@ -154,11 +155,11 @@ try {
     if (@($task).Count -ne 1) { throw 'VS Code task ID missing' }
     $taskId = $task -replace '^VISOR_EDITOR_TASK=', ''
     if ($RemoteSsh) {
-        & ssh.exe -F $sshConfig $remoteName /usr/bin/python3 /opt/visor-wsl/task.py verify $taskId
+        & $ssh -F $sshConfig $remoteName /usr/bin/python3 /opt/visor-wsl/task.py verify $taskId
         if ($LASTEXITCODE -ne 0) { throw 'The SSH CLI could not read the editor-started task' }
         & wsl.exe --distribution $distro --user root --exec touch /var/lib/visor-ssh-ci/revoked
         if ($LASTEXITCODE -ne 0) { throw 'The fixture authority did not revoke the assignment' }
-        & ssh.exe -F $sshConfig $remoteName /usr/bin/python3 /opt/visor-wsl/task.py verify-revoked $taskId
+        & $ssh -F $sshConfig $remoteName /usr/bin/python3 /opt/visor-wsl/task.py verify-revoked $taskId
         if ($LASTEXITCODE -ne 0) { throw 'The revoked task did not pass the SSH CLI refusal check' }
     } else {
         Invoke-WSL /usr/bin/python3 /opt/visor-wsl/task.py verify $taskId

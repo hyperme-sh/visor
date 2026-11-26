@@ -95,9 +95,9 @@ a new grant. List again for the new revision after a state change.
 
 ## Catalog and owner API
 
-All endpoints use the companion socket. The publication metadata fields are
-versioned alongside the publication schema and can be consumed by s3r.ch's
-catalog. A hosted catalog can verify an artifact from its public source and
+All endpoints use the companion socket. The publication response follows
+the [catalog metadata schema](publication-v1.json) with `metadata_version: 1`.
+The same fields are available to the s3r.ch catalog. A hosted catalog can verify an artifact from its public source and
 publisher authority, then display the signed ID, version, source and manifest
 digest and the derived publisher classification and key fingerprint. Installation
 and session grants stay with Visor.

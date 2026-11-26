@@ -123,9 +123,8 @@ async fn install(
         let package = Publication::read(&body.source, Some(&body.publication_sha256))?;
         let id = package.metadata.id.clone();
         with_store(&state, |store| {
-            let mut grants = lock(&state.plugins);
             let entry = store.install(package, body.expected_revision, || {
-                grants.revoke_plugin(&id)
+                lock(&state.plugins).revoke_plugin(&id)
             })?;
             let status = if body.expected_revision.is_some() {
                 StatusCode::OK
@@ -167,9 +166,8 @@ async fn set_enabled(
     private(link)?;
     Ok(publication_task(move || {
         with_store(&state, |store| {
-            let mut grants = lock(&state.plugins);
             let entry = store.set_enabled(&id, body.expected_revision, body.enabled, || {
-                grants.revoke_plugin(&id)
+                lock(&state.plugins).revoke_plugin(&id)
             })?;
             Ok(Json(entry).into_response())
         })
@@ -192,8 +190,9 @@ async fn remove(
     private(link)?;
     Ok(publication_task(move || {
         with_store(&state, |store| {
-            let mut grants = lock(&state.plugins);
-            store.remove(&id, body.expected_revision, || grants.revoke_plugin(&id))?;
+            store.remove(&id, body.expected_revision, || {
+                lock(&state.plugins).revoke_plugin(&id)
+            })?;
             Ok(StatusCode::NO_CONTENT.into_response())
         })
     })

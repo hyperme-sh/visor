@@ -78,6 +78,7 @@ pub(crate) struct Publisher {
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Metadata {
+    pub(super) metadata_version: u32,
     pub(crate) id: String,
     pub(crate) package_version: String,
     pub(crate) publication_sha256: String,
@@ -327,6 +328,7 @@ impl Publication {
             key_sha256: digest(&key),
         };
         let metadata = Metadata {
+            metadata_version: 1,
             id: statement.plugin_id.clone(),
             package_version: statement.package_version.clone(),
             source: statement.source.clone(),

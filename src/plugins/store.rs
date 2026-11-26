@@ -68,7 +68,11 @@ impl Store {
             return Err(Error::Storage);
         }
         let entry: Entry = serde_json::from_slice(&line).map_err(|_| Error::Storage)?;
-        if entry.record_version != 1 || entry.revision.is_nil() || entry.metadata.id != id {
+        if entry.record_version != 1
+            || entry.metadata.metadata_version != 1
+            || entry.revision.is_nil()
+            || entry.metadata.id != id
+        {
             return Err(Error::Storage);
         }
         Ok(Some((entry, reader)))

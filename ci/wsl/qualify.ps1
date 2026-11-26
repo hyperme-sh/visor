@@ -125,7 +125,8 @@ try {
         $settings['remote.SSH.remotePlatform'] = @{ $remoteName = 'linux' }
         $settings['remote.SSH.path'] = $ssh
         $settings['remote.SSH.showLoginTerminal'] = $false
-        $settings['remote.SSH.useLocalServer'] = $false
+        # The resolver must connect before the workbench presents the trust prompt.
+        $settings['remote.SSH.useLocalServer'] = $true
         $settings['remote.SSH.useExecServer'] = $false
         $settings['remote.SSH.connectTimeout'] = 60
     }

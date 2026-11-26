@@ -33,9 +33,9 @@ and distribution layer and conveys no permission to invoke a tool.
 Visor starts one isolated process per invocation. Stdout contains one UTF-8
 JSON-RPC object per line, with a 96 KiB frame limit including the newline.
 Diagnostics belong on stderr, which Visor discards. The process sees a read-only
-root containing its executable, an empty environment, stdio pipes, and private
-user, PID, and network namespaces. It receives no workspace mount or
-credentials. Linux requires an unprivileged Visor process, the system
+root containing its executable, stdio pipes, and private user, PID, and
+network namespaces. Bubblewrap sets `PWD=/`. The process inherits no host
+environment, workspace mount, or credentials. Linux requires an unprivileged Visor process, the system
 `/usr/bin/bwrap` with user/PID/network namespace support, and a kernel with
 `close_range` support. On Ubuntu with AppArmor user-namespace restrictions,
 the owner can enable the distribution's `bwrap-userns-restrict` profile for

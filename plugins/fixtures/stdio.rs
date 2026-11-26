@@ -42,7 +42,7 @@ fn main() {
             r#"{{"jsonrpc":"2.0","id":2,"result":{{"content":[],"structuredContent":{{"byte_count":3}}}}}}"#
         ),
         "isolation" => {
-            assert!(std::env::vars_os().next().is_none());
+            assert!(std::env::vars_os().all(|(name, value)| name == "PWD" && value == "/"));
             assert!(std::fs::File::open("/etc/passwd").is_err());
             assert!(std::fs::File::open("/proc/self/status").is_err());
             println!(r#"{{"jsonrpc":"2.0","id":2,"result":{{"byte_count":3}}}}"#);

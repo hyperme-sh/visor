@@ -2,8 +2,8 @@
 set -euo pipefail
 
 case "$EXPECTED_ARCH" in
-    amd64) test "$(uname -m)" = x86_64 ;;
-    arm64) test "$(uname -m)" = aarch64 ;;
+    amd64) [[ "$(uname -m)" == x86_64 ]] ;;
+    arm64) [[ "$(uname -m)" == aarch64 ]] ;;
     *) exit 2 ;;
 esac
 if [[ ! "$PUBLISHED_TEST_INDEX" =~ ^sha256:[a-f0-9]{64}$ || ! "$LIVE_GITHUB_ISSUE_ACCOUNT" =~ ^[1-9][0-9]{0,19}$ ]]; then
@@ -12,8 +12,8 @@ if [[ ! "$PUBLISHED_TEST_INDEX" =~ ^sha256:[a-f0-9]{64}$ || ! "$LIVE_GITHUB_ISSU
 fi
 export VISOR_IMAGE="ghcr.io/hyperme-sh/hypermesh-visor@$PUBLISHED_TEST_INDEX"
 docker pull "$VISOR_IMAGE"
-test "$(docker image inspect --format '{{.Architecture}}' "$VISOR_IMAGE")" = "$EXPECTED_ARCH"
-test "$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$VISOR_IMAGE")" = "$GITHUB_SHA"
+[[ "$(docker image inspect --format '{{.Architecture}}' "$VISOR_IMAGE")" == "$EXPECTED_ARCH" ]]
+[[ "$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$VISOR_IMAGE")" == "$GITHUB_SHA" ]]
 printf 'Visor image %s %s from %s\n' "$EXPECTED_ARCH" "$VISOR_IMAGE" "$GITHUB_SHA"
 
 scratch="$(mktemp -d)"
@@ -38,7 +38,7 @@ for _ in {1..50}; do
     kill -0 "$relay_pid"
     sleep 0.1
 done
-test -S "$VISOR_GITHUB_ISSUE_RELAY_SOCKET"
+[[ -S "$VISOR_GITHUB_ISSUE_RELAY_SOCKET" ]]
 sudo chown 1000:1000 "$VISOR_GITHUB_ISSUE_RELAY_SOCKET"
 
 if ! "${compose[@]}" up -d --pull never --wait --wait-timeout 90 writer; then
@@ -46,7 +46,7 @@ if ! "${compose[@]}" up -d --pull never --wait --wait-timeout 90 writer; then
     exit 1
 fi
 id="$("${compose[@]}" ps -q writer)"
-test "$(docker inspect --format '{{.HostConfig.NetworkMode}}' "$id")" = none
+[[ "$(docker inspect --format '{{.HostConfig.NetworkMode}}' "$id")" == none ]]
 probe=/home/bot/.local/state/hypermesh/github-issue-probe.py
 "${compose[@]}" exec -T writer sh -ec 'umask 077; cat > "$1"' sh "$probe" \
     < ci/container/published-github-issue-probe.py

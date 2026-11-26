@@ -5,9 +5,11 @@ use super::{
 };
 use hypermesh_local_storage as storage;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::{
-    fs::{self, File},
+    fs::{self, File, OpenOptions},
     io::{self, BufRead, BufReader, Read, Write},
+    os::unix::fs::{MetadataExt, OpenOptionsExt},
     path::{Path, PathBuf},
 };
 use uuid::Uuid;
@@ -15,9 +17,11 @@ use uuid::Uuid;
 const MAX_ENTRIES: usize = 16;
 const MAX_HEADER: u64 = 128 * 1024;
 const SUFFIX: &str = ".package";
+const BUNDLE_PATH: &str = "/usr/local/share/hypermesh-visor/plugins/github-issue.visor-plugin";
 
 pub(crate) struct Store {
     dir: PathBuf,
+    bundled: Option<(Entry, Vec<u8>)>,
     // A single running Visor owns this store, including across different socket paths.
     lock: File,
 }
@@ -28,6 +32,8 @@ pub(crate) struct Entry {
     record_version: u32,
     pub(crate) revision: Uuid,
     pub(crate) enabled: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub(crate) bundled: bool,
     pub(crate) metadata: Metadata,
 }
 
@@ -39,7 +45,11 @@ impl Store {
         let lock =
             storage::open(&dir.join("lock"), storage::Open::Lock).map_err(|_| Error::Storage)?;
         storage::lock(&lock).map_err(|_| Error::Storage)?;
-        Ok(Self { dir, lock })
+        Ok(Self {
+            dir,
+            bundled: load_bundle(Path::new(BUNDLE_PATH))?,
+            lock,
+        })
     }
 
     fn path(&self, id: &str) -> Result<PathBuf, Error> {
@@ -71,6 +81,7 @@ impl Store {
         if entry.record_version != 1
             || entry.metadata.metadata_version != 1
             || entry.revision.is_nil()
+            || entry.bundled
             || entry.metadata.id != id
         {
             return Err(Error::Storage);
@@ -79,7 +90,16 @@ impl Store {
     }
 
     pub(crate) fn get(&self, id: &str) -> Result<Option<Entry>, Error> {
-        Ok(self.open_entry(id)?.map(|(entry, _)| entry))
+        Ok(self
+            .open_entry(id)?
+            .map(|(entry, _)| entry)
+            .or_else(|| self.bundle(id).map(|(entry, _)| entry.clone())))
+    }
+
+    fn bundle(&self, id: &str) -> Option<&(Entry, Vec<u8>)> {
+        self.bundled
+            .as_ref()
+            .filter(|(entry, _)| entry.metadata.id == id)
     }
 
     pub(crate) fn list(&self) -> Result<Vec<Entry>, Error> {
@@ -95,6 +115,14 @@ impl Store {
                 return Err(Error::Storage);
             }
         }
+        if let Some((entry, _)) = &self.bundled {
+            if !entries
+                .iter()
+                .any(|item| item.metadata.id == entry.metadata.id)
+            {
+                entries.push(entry.clone());
+            }
+        }
         entries.sort_unstable_by(|a, b| a.metadata.id.cmp(&b.metadata.id));
         Ok(entries)
     }
@@ -106,6 +134,9 @@ impl Store {
         invalidate: impl FnOnce(),
     ) -> Result<Entry, Error> {
         let before = self.get(&package.metadata.id)?;
+        if before.as_ref().is_some_and(|entry| entry.bundled) {
+            return Err(Error::Bundled);
+        }
         if before.as_ref().map(|entry| entry.revision) != expected {
             return Err(Error::Changed);
         }
@@ -116,13 +147,14 @@ impl Store {
             if before.metadata.package_version == package.metadata.package_version {
                 return Err(Error::Changed);
             }
-        } else if self.list()?.len() >= MAX_ENTRIES {
+        } else if self.list()?.iter().filter(|entry| !entry.bundled).count() >= MAX_ENTRIES {
             return Err(Error::Storage);
         }
         let next = Entry {
             record_version: 1,
             revision: Uuid::new_v4(),
             enabled: before.is_none_or(|entry| entry.enabled),
+            bundled: false,
             metadata: package.metadata,
         };
         self.write(&next, &mut package.archive.as_slice(), invalidate)?;
@@ -130,7 +162,16 @@ impl Store {
     }
 
     pub(crate) fn activate(&self, id: &str, revision: Uuid, tool: &str) -> Result<Package, Error> {
-        let (entry, reader) = self.current(id, revision)?;
+        let Some((entry, reader)) = self.open_entry(id)? else {
+            let (entry, archive) = self.bundle(id).ok_or(Error::Missing)?;
+            if entry.revision != revision {
+                return Err(Error::Changed);
+            }
+            return Publication::installed(archive.clone(), &entry.metadata, tool);
+        };
+        if entry.revision != revision {
+            return Err(Error::Changed);
+        }
         if !entry.enabled {
             return Err(Error::Disabled);
         }
@@ -171,7 +212,13 @@ impl Store {
     }
 
     fn current(&self, id: &str, expected: Uuid) -> Result<(Entry, BufReader<File>), Error> {
-        let (entry, file) = self.open_entry(id)?.ok_or(Error::Missing)?;
+        let Some((entry, file)) = self.open_entry(id)? else {
+            return Err(if self.bundle(id).is_some() {
+                Error::Bundled
+            } else {
+                Error::Missing
+            });
+        };
         if entry.revision != expected {
             return Err(Error::Changed);
         }
@@ -205,6 +252,46 @@ impl Store {
         invalidate();
         storage::sync_dir(&self.dir).map_err(|_| Error::Storage)
     }
+}
+
+fn load_bundle(path: &Path) -> Result<Option<(Entry, Vec<u8>)>, Error> {
+    // Only the image's fixed, root-owned location supplies a built-in package.
+    let file = match OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(path)
+    {
+        Ok(file) => file,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(_) => return Err(Error::Storage),
+    };
+    let metadata = file.metadata().map_err(|_| Error::Storage)?;
+    if !metadata.is_file() || metadata.uid() != 0 || metadata.mode() & 0o022 != 0 {
+        return Err(Error::Storage);
+    }
+    for parent in path.ancestors().skip(1) {
+        let metadata = fs::symlink_metadata(parent).map_err(|_| Error::Storage)?;
+        if !metadata.is_dir() || metadata.uid() != 0 || metadata.mode() & 0o022 != 0 {
+            return Err(Error::Storage);
+        }
+    }
+    let mut archive = Vec::new();
+    file.take(MAX_ARTIFACT + 1)
+        .read_to_end(&mut archive)
+        .map_err(|_| Error::Storage)?;
+    let mut revision = [0; 16];
+    revision.copy_from_slice(&Sha256::digest(&archive)[..16]);
+    let bundle = Publication::bundled(archive)?;
+    Ok(Some((
+        Entry {
+            record_version: 1,
+            revision: Uuid::from_bytes(revision),
+            enabled: true,
+            bundled: true,
+            metadata: bundle.metadata,
+        },
+        bundle.archive,
+    )))
 }
 
 impl Drop for Store {

@@ -48,7 +48,9 @@ fn error(error: plugin::Error) -> Value {
 fn publication_error(error: PublicationError) -> Response {
     let status = match error {
         PublicationError::Missing => StatusCode::NOT_FOUND,
-        PublicationError::Disabled | PublicationError::Changed => StatusCode::CONFLICT,
+        PublicationError::Disabled | PublicationError::Changed | PublicationError::Bundled => {
+            StatusCode::CONFLICT
+        }
         PublicationError::Publisher => StatusCode::FORBIDDEN,
         PublicationError::Storage => StatusCode::SERVICE_UNAVAILABLE,
         _ => StatusCode::BAD_REQUEST,
@@ -285,7 +287,7 @@ async fn enable(
                 return Ok(ApiError::bad("Plugin scope does not cover this target").into_response());
             }
             if code_mode
-                && (package.key() != "dev.visor.github-issue"
+                && (package.key() != plugin::GITHUB_ISSUE_PLUGIN_ID
                     || !matches!(target, plugin::Target::GitHub(_)))
             {
                 return Ok(

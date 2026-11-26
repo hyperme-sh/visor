@@ -23,6 +23,27 @@ COPY third_party third_party
 COPY tests tests
 RUN cargo build --locked --release --workspace
 
+FROM build AS github-issue-plugin
+COPY plugins/sdk plugins/sdk
+COPY plugins/github-issue plugins/github-issue
+RUN set -eu; \
+    umask 077; \
+    scratch="$(mktemp -d)"; \
+    trap 'rm -rf "$scratch"' EXIT; \
+    target="$(rustc -vV | sed -n 's/^host: //p')"; \
+    CARGO_TARGET_DIR="$scratch/build" RUSTFLAGS='-C target-feature=+crt-static' \
+      cargo build --manifest-path plugins/github-issue/Cargo.toml --release --locked --target "$target"; \
+    mkdir "$scratch/package"; \
+    install -m 0600 "$scratch/build/$target/release/visor-github-issue" "$scratch/package/plugin"; \
+    digest="$(sha256sum "$scratch/package/plugin" | cut -d ' ' -f 1)"; \
+    sed "s/\"executable_sha256\": \"\"/\"executable_sha256\": \"$digest\"/" \
+      plugins/github-issue/manifest.template.json > "$scratch/package/manifest.json"; \
+    mkdir /bundle; \
+    openssl genpkey -algorithm Ed25519 -outform DER -out "$scratch/publisher.der"; \
+    target/release/hypermesh-plugin-publish "$scratch/package" \
+      https://github.com/hyperme-sh/visor/pkgs/container/hypermesh-visor \
+      < "$scratch/publisher.der" > /bundle/github-issue.visor-plugin
+
 FROM build AS crash-sdk
 RUN apt-get update && apt-get install -y --no-install-recommends cmake libcurl4-openssl-dev python3 && rm -rf /var/lib/apt/lists/*
 COPY native/crash native/crash
@@ -39,12 +60,13 @@ RUN rm -f /etc/apt/sources.list.d/debian.sources && \
     printf 'deb [check-valid-until=no] https://snapshot.debian.org/archive/debian/%s/ %s main\ndeb [check-valid-until=no] https://snapshot.debian.org/archive/debian-security/%s/ %s-security main\n' \
       "$DEBIAN_SNAPSHOT" "$DEBIAN_SUITE" "$DEBIAN_SNAPSHOT" "$DEBIAN_SUITE" > /etc/apt/sources.list && \
     apt-get -o Acquire::ForceIPv4=true -o Acquire::https::Timeout=30 -o APT::Update::Error-Mode=any -o Acquire::https::CaInfo=/etc/ssl/certs/ca-certificates.crt update && apt-get -o Acquire::ForceIPv4=true -o Acquire::https::Timeout=30 -o APT::Update::Error-Mode=any -o Acquire::https::CaInfo=/etc/ssl/certs/ca-certificates.crt install -y --no-install-recommends \
-      ca-certificates libcurl4t64 dbus-x11 firefox-esr fonts-dejavu-core mousepad openbox \
+      bubblewrap ca-certificates libcurl4t64 dbus-x11 firefox-esr fonts-dejavu-core mousepad openbox \
       python3 python3-tk python3-xlib pulseaudio tini x11-utils xauth xdotool xterm xvfb zenity && \
     dpkg-query -W > /usr/share/visor-packages.txt && rm -rf /var/lib/apt/lists/* && \
     groupadd --gid 2000 resources && useradd --uid 1000 --create-home --shell /bin/bash bot && \
     usermod -a -G resources bot && install -d -o bot -g bot -m 0700 /run/visor /home/bot/.config /home/bot/.local/state /home/bot/workspace
 COPY --from=build /src/target/release/hypermesh-visor /src/target/release/hypermesh-companion /src/target/release/hypermesh-desktop-mcp /src/target/release/hypermesh-acp /usr/local/bin/
+COPY --from=github-issue-plugin --chmod=0444 /bundle/github-issue.visor-plugin /usr/local/share/hypermesh-visor/plugins/github-issue.visor-plugin
 COPY --from=cli /out/hypermesh /usr/local/bin/hypermesh
 COPY --from=crash-sdk /crash-runtime /usr/local/lib/hypermesh-visor/crash-sdk
 RUN ldd /usr/local/lib/hypermesh-visor/crash-sdk/bin/crashpad_handler > /tmp/crash-dependencies && \

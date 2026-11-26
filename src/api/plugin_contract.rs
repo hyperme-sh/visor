@@ -608,19 +608,49 @@ async fn github_issue_plugin_uses_the_selected_account_and_public_repository() {
         .get(crate::vault::GITHUB_ISSUES_SECRET)
         .is_none());
 
-    let package = PathBuf::from(std::env::var_os("VISOR_GITHUB_ISSUE_PUBLICATION").unwrap());
-    let installed = request(
-        &companion,
-        "POST",
-        "/plugins",
-        json!({
-            "source":package, "publication_sha256":digest(&std::fs::read(&package).unwrap()),
-            "expected_revision":null,
-        }),
-    )
-    .await;
-    assert_eq!(installed.status(), StatusCode::CREATED);
-    let installed = body(installed).await;
+    let bundle_digest = std::env::var("VISOR_TEST_BUNDLED_GITHUB_ISSUE").ok();
+    let installed = if let Some(expected) = &bundle_digest {
+        let response = request(&companion, "GET", "/plugins", Value::Null).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let catalog = body(response).await;
+        let entries = catalog["plugins"].as_array().unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0]["metadata"]["id"], PLUGIN);
+        assert_eq!(
+            entries[0]["metadata"]["publication_sha256"],
+            expected.as_str()
+        );
+        assert_eq!(entries[0]["bundled"], true);
+        assert_eq!(entries[0]["enabled"], true);
+        let revision = &entries[0]["revision"];
+        let refused = request(
+            &companion,
+            "DELETE",
+            &format!("/plugins/{PLUGIN}"),
+            json!({"expected_revision":revision}),
+        )
+        .await;
+        assert_eq!(refused.status(), StatusCode::CONFLICT);
+        assert_eq!(
+            body(refused).await["error"]["code"],
+            "bundled_plugin_immutable"
+        );
+        entries[0].clone()
+    } else {
+        let package = PathBuf::from(std::env::var_os("VISOR_GITHUB_ISSUE_PUBLICATION").unwrap());
+        let installed = request(
+            &companion,
+            "POST",
+            "/plugins",
+            json!({
+                "source":package, "publication_sha256":digest(&std::fs::read(&package).unwrap()),
+                "expected_revision":null,
+            }),
+        )
+        .await;
+        assert_eq!(installed.status(), StatusCode::CREATED);
+        body(installed).await
+    };
     let target = json!({"account":21,"repository":"Example/Project"});
     let enable = json!({
         "target":target,"tool":"read-issue","plugin_id":PLUGIN,"revision":installed["revision"]
@@ -635,6 +665,13 @@ async fn github_issue_plugin_uses_the_selected_account_and_public_repository() {
         return [first, github.issue.read(next)].map(({number, title, state}) =>
             ({number, title, state}));
     "});
+    assert_eq!(
+        request(&companion, "POST", &code, script.clone())
+            .await
+            .status(),
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(calls.load(Ordering::Acquire), 0);
     let mut opted_in = enable.clone();
     opted_in["code_mode"] = json!(true);
     let scratch = root.0.join("plugin-scratch");
@@ -932,5 +969,12 @@ async fn github_issue_plugin_uses_the_selected_account_and_public_repository() {
     assert!(rows.iter().any(|row| row["outcome"] == "cancelled"));
     assert!(!audit.to_string().contains(TOKEN));
     assert!(!audit.to_string().contains("Fixture issue"));
+    if bundle_digest.is_some() {
+        assert!(!root
+            .0
+            .join("plugins-installed")
+            .join(format!("{PLUGIN}.package"))
+            .exists());
+    }
     fixture.abort();
 }

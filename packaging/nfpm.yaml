@@ -15,6 +15,7 @@ maintainer: Fyber Labs <github@fyberlabs.com>
 description: Linux desktop visor, CLI, and companion for Hypermesh
 homepage: https://github.com/FyberLabs/hypermesh-visor
 depends:
+  - alsa-utils
   - zenity
 contents:
   - src: src/tool_catalog/llama2c/LICENSE
@@ -76,6 +77,6 @@ contents:
 
 overrides:
   deb:
-    depends: [zenity, libcurl4t64]
+    depends: [alsa-utils, zenity, libcurl4t64]
   rpm:
-    depends: [zenity, libcurl]
+    depends: [alsa-utils, zenity, libcurl]

@@ -177,6 +177,10 @@ for target in "${targets[@]}"; do
     echo "unexpected deb metadata for $deb: $got_deb_name $got_deb_arch $got_deb_home" >&2
     exit 1
   fi
+  if ! grep -Eq '(^|,)[[:space:]]*alsa-utils[[:space:]]*(,|$)' <<<"$(dpkg-deb -f "$deb" Depends)"; then
+    echo "$deb is missing the alsa-utils dependency for companion audio" >&2
+    exit 1
+  fi
   if [[ "$target" == "$host_target" ]]; then
     package_root="$conductor_src/installed-$deb_arch"
     dpkg-deb -x "$deb" "$package_root"
@@ -206,6 +210,10 @@ for target in "${targets[@]}"; do
     got_rpm=$(rpm -qp --queryformat '%{NAME} %{ARCH} %{URL}' "$rpm")
     if [[ "$got_rpm" != "hypermesh-visor ${rpm_arch} https://github.com/FyberLabs/hypermesh-visor" ]]; then
       echo "unexpected rpm metadata for $rpm: $got_rpm" >&2
+      exit 1
+    fi
+    if ! grep -Fxq alsa-utils <<<"$(rpm -qp --requires "$rpm")"; then
+      echo "$rpm is missing the alsa-utils dependency for companion audio" >&2
       exit 1
     fi
   fi

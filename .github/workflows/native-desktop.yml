@@ -23,6 +23,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Download the WSL fixture
+        id: wsl_artifact
         if: inputs.wsl_fixture
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
@@ -37,7 +38,7 @@ jobs:
         timeout-minutes: 14
         run: ./ci/wsl/qualify.ps1 -RemoteSsh
       - name: Embedded preview from VS Code and CLI on an enrolled SSH host
-        if: inputs.wsl_fixture
+        if: ${{ !cancelled() && inputs.wsl_fixture && steps.wsl_artifact.outcome == 'success' }}
         timeout-minutes: 14
         run: ./ci/wsl/qualify.ps1 -RemoteSsh -Preview
       - uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5

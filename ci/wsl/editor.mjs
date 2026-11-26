@@ -149,11 +149,14 @@ try {
     `document.title.toLowerCase().includes(${JSON.stringify(workspaceTitle)})`,
   ), 120_000);
   const trustButtons = '.monaco-dialog-box .monaco-button, .monaco-dialog-box button';
-  await until('the Workspace Trust prompt', async () =>
+  const trustWorkspace = async () =>
     (device && await click(trustButtons, 'Trust Folder & Continue')) ||
-    await click(trustButtons, 'Yes, I trust the authors'), 60_000);
+    await click(trustButtons, 'Yes, I trust the authors');
+  await until('the Workspace Trust prompt', trustWorkspace, 60_000);
   const begin = async () => {
-    await until('the installed Hypermesh command in the remote window', async () => {
+    await until('the installed Hypermesh command in the workspace', async () => {
+      // Remote ports and the workspace can each present a trust prompt during startup.
+      if (await trustWorkspace()) return false;
       try {
         await palette('Hypermesh: Visor terminal task', 6000);
         return true;

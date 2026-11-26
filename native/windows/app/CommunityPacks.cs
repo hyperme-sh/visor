@@ -149,6 +149,6 @@ internal static class CommunityPacks
             }
         }
         CompanionPacks.CheckCatalogPair(data);
-        Console.WriteLine("PASS community pack previews, Beetle with Clover Rabbit voice, and bundled art and mute after removal");
+        Console.WriteLine("PASS community pack previews, offline recovery, and bundled art and mute after removal");
     }
 }

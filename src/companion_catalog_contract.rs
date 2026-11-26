@@ -8,10 +8,11 @@ use base64::{engine::general_purpose::STANDARD, Engine as _};
 use serde_json::{json, Map, Value};
 
 use super::{catalog, packs, request_from, storage, MAX_RESPONSE_BYTES};
+use catalog::read_download;
 
 #[path = "../ci/fixtures/published_companion_catalog.rs"]
 mod fixture;
-use fixture::{read_fixture, ASSETS, SOURCE};
+use fixture::{read_with_fault, DownloadFault, ASSETS, SOURCE};
 
 struct TempConfig(PathBuf);
 
@@ -30,12 +31,13 @@ fn published_packs_native_contract() {
         TempConfig(std::env::temp_dir().join(format!("catalog-contract-{}", uuid::Uuid::new_v4())));
     storage::create_dir(&config.0).unwrap();
     let offline = Cell::new(false);
+    let fault = Cell::new(None);
     let read = |path: &str, limit| {
         assert!(
             !offline.get(),
             "an offline pack request tried to fetch {path}"
         );
-        read_fixture(Path::new(&fixture), path, limit)
+        read_with_fault(Path::new(&fixture), path, limit, fault.get())
     };
     let source = catalog::CatalogSource::new(&read);
     let send = |input: Value| {
@@ -49,6 +51,7 @@ fn published_packs_native_contract() {
         assert!(body.get("error").is_none(), "{body}");
         body
     };
+    let load = |medium| request(json!({"action":"pack-load", "medium":medium}));
     let listing = request(json!({"action":"pack-catalog-list"}));
     assert_eq!(listing["source_revision"], SOURCE);
     assert_eq!(listing["asset_revision"], ASSETS);
@@ -90,6 +93,18 @@ fn published_packs_native_contract() {
                                                    "revision":ASSETS, "replace":false}))
         };
         if id == "ember-cat" {
+            for case in DownloadFault::CASES {
+                fault.set(Some(("ember-cat.pack.json", case)));
+                let rejected = install(entry);
+                assert!(
+                    rejected["error"]
+                        .as_str()
+                        .is_some_and(|error| error.contains(case.expected_error())),
+                    "{rejected}"
+                );
+                assert!(!config.0.join("companion-packs/ember-cat").exists());
+            }
+            fault.set(None);
             let mut wrong_digest = entry.clone();
             wrong_digest["archive"]["sha256"] = json!("0".repeat(64));
             let rejected = install(&wrong_digest);
@@ -148,6 +163,12 @@ fn published_packs_native_contract() {
     let edited = fs::read(rabbit_dir.join("sleeping.wav")).unwrap();
     assert_ne!(edited, original);
     fs::write(&working, &edited).unwrap();
+    let known_good = load("voice");
+    assert_eq!(known_good["id"], "clover-rabbit");
+    assert_ne!(
+        known_good["audio"]["working.wav"],
+        previews["clover-rabbit"]["voice"]
+    );
     let replace = |entry: &Value, confirmed| {
         send(json!({"action":"pack-catalog-install", "entry":entry,
                     "revision":ASSETS, "replace":confirmed}))
@@ -171,6 +192,48 @@ fn published_packs_native_contract() {
         "{rejected}"
     );
     assert_eq!(fs::read(&working).unwrap(), edited);
+    for case in DownloadFault::CASES {
+        fault.set(Some(("clover-rabbit.pack.json", case)));
+        let rejected = replace(rabbit_entry, true);
+        assert!(
+            rejected["error"]
+                .as_str()
+                .is_some_and(|error| error.contains(case.expected_error())),
+            "{rejected}"
+        );
+        offline.set(true);
+        assert_eq!(load("voice"), known_good);
+        assert_eq!(fs::read(&working).unwrap(), edited);
+        offline.set(false);
+    }
+    fault.set(None);
+
+    // Stage a valid published update, then stop after moving the last working
+    // copy aside and before renaming the candidate into the live directory.
+    let pack_root = config.0.join("companion-packs");
+    let stage = pack_root.join(format!(".catalog-{}", uuid::Uuid::new_v4()));
+    storage::create_dir(&stage).unwrap();
+    let staged = request_from(
+        &stage,
+        json!({"action":"pack-catalog-install", "entry":rabbit_entry,
+                              "revision":ASSETS, "replace":false}),
+        &source,
+    );
+    assert_eq!(staged["body"]["changed"], true, "{staged}");
+    let staged_working = stage.join("companion-packs/clover-rabbit/working.wav");
+    assert_eq!(fs::read(&staged_working).unwrap(), original);
+    let backup = pack_root.join(".previous-clover-rabbit");
+    fs::rename(&rabbit_dir, &backup).unwrap();
+    assert!(!rabbit_dir.exists());
+    offline.set(true);
+    let recovered_voice = load("voice");
+    assert_eq!(recovered_voice, known_good);
+    assert_eq!(load("appearance")["id"], "visor-beetle");
+    assert_eq!(fs::read(&working).unwrap(), edited);
+    assert_eq!(fs::read(staged_working).unwrap(), original);
+    assert!(!backup.exists());
+
+    offline.set(false);
     assert_eq!(replace(rabbit_entry, true)["changed"], true);
     assert_eq!(fs::read(&working).unwrap(), original);
     assert!(!config
@@ -203,7 +266,6 @@ fn published_packs_native_contract() {
         );
         assert!(!config.0.join("companion-packs").join(id).exists());
     };
-    let load = |medium| request(json!({"action":"pack-load", "medium":medium}));
     remove("visor-beetle");
     let remaining = request(json!({"action":"pack-list"}));
     assert_eq!(
@@ -243,7 +305,7 @@ fn published_packs_native_contract() {
     assert_eq!(load("appearance"), bundled);
     assert_eq!(load("voice"), muted);
     let responses = json!({"catalog":listing,"previews":previews,"appearance":appearance,
-                           "voice":voice,"cues":cues,
+                           "voice":voice,"cues":cues,"recovered_voice":recovered_voice,
                            "after_appearance_removal":{"appearance":bundled,"voice":remaining_voice},
                            "after_voice_removal":{"appearance":bundled,"voice":muted}});
     fs::write(output, serde_json::to_vec(&responses).unwrap()).unwrap();

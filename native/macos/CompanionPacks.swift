@@ -254,6 +254,7 @@ func nativePackFrameIndex(count: Int, interval: UInt64, loop: Bool, elapsed: UIn
             let appearance: PackBundle
             let voice: PackBundle
             let cues: PackCues
+            let recovered_voice: PackBundle
             let after_appearance_removal: Selection
             let after_voice_removal: Selection
         }
@@ -268,6 +269,15 @@ func nativePackFrameIndex(count: Int, interval: UInt64, loop: Bool, elapsed: UIn
         try verifyNativeUnit(fixture.appearance.id == "visor-beetle" && art?.frames.count == 8)
         try verifyNativeUnit(cursor?.size == NSSize(width: 32, height: 32))
         try verifyNativeUnit(fixture.voice.id == "clover-rabbit" && packs.selectedAudio == "working.wav" && (sound?.duration ?? 0) > 0)
+
+        let restored = fixture.recovered_voice
+        packs.apply(restored, medium: "voice")
+        packs.resolve(fixture.cues, now: Self.clock)
+        let restoredAudio = packs.selectedAudio.flatMap { packs.recordings[$0] }
+        let restoredSound = restoredAudio.flatMap { NSSound(data: $0) }
+        try verifyNativeUnit(restored.id == "clover-rabbit" && packs.selectedAudio == "working.wav")
+        try verifyNativeUnit(restoredAudio == fixture.voice.audio?["sleeping.wav"] && restoredAudio != fixture.voice.audio?["working.wav"])
+        try verifyNativeUnit((restoredSound?.duration ?? 0) > 0 && packs.clipKey.flatMap { packs.clips[$0]?.frames.count } == 8)
 
         let appearanceRemoval = fixture.after_appearance_removal
         packs.apply(appearanceRemoval.appearance, medium: "appearance")

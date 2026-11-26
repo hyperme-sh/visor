@@ -15,7 +15,7 @@ cargo build --locked --no-default-features --features headless -p hypermesh-viso
 install -m 0755 target/debug/hypermesh-visor target/debug/hypermesh-companion "$stage"
 strip "$stage/hypermesh-visor" "$stage/hypermesh-companion"
 version=$(cat ci/wsl/vscode-version)
-curl --fail --silent --show-error --location --retry 3 --max-time 180 \
+curl --proto '=https' --proto-redir '=https' --fail --silent --show-error --location --retry 3 --max-time 180 \
     "https://update.code.visualstudio.com/$version/server-linux-x64/stable" \
     --output "$stage/vscode-server.tar.gz"
 cp ci/wsl/{Dockerfile,task.py} "$editor/dist/hypermesh-vscode.vsix" "$stage"

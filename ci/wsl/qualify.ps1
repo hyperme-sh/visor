@@ -6,7 +6,7 @@ if ($env:GITHUB_ACTIONS -ne 'true' -or $env:RUNNER_ARCH -ne 'X64' -or !$env:RUNN
 $fixture = Join-Path $env:RUNNER_TEMP "visor-wsl-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"
 $distro = "VisorCI-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"
 $archive = Join-Path $env:RUNNER_TEMP 'visor-wsl-artifact/visor-wsl.tar'
-$workspace = '/tmp/visor-wsl/project'
+$workspace = '/home/visorci/.visor-wsl/project'
 $codeProcess = $null
 $owner = $null
 $imported = $false
@@ -35,7 +35,7 @@ try {
     $case = $null
     for ($attempt = 0; $attempt -lt 60; $attempt++) {
         if ($owner.HasExited) { throw "Installed WSL runtime exited ($($owner.ExitCode))" }
-        $raw = & wsl.exe --distribution $distro --exec sh -c 'test ! -s /tmp/visor-wsl/case.json || cat /tmp/visor-wsl/case.json'
+        $raw = & wsl.exe --distribution $distro --exec sh -c 'test ! -s /home/visorci/.visor-wsl/case.json || cat /home/visorci/.visor-wsl/case.json'
         if ($LASTEXITCODE -eq 0 -and $raw) {
             $case = $raw | ConvertFrom-Json
             break
@@ -47,7 +47,7 @@ try {
     $codeVersion = (Get-Content -LiteralPath 'ci/wsl/vscode-version' -Raw).Trim()
     $zip = Join-Path $fixture 'vscode.zip'
     $url = "https://update.code.visualstudio.com/$codeVersion/win32-x64-archive/stable"
-    & curl.exe --fail --silent --show-error --location --retry 3 --max-time 180 $url --output $zip
+    & curl.exe --proto '=https' --proto-redir '=https' --fail --silent --show-error --location --retry 3 --max-time 180 $url --output $zip
     if ($LASTEXITCODE -ne 0) { throw 'VS Code desktop download failed' }
     $codeDir = Join-Path $fixture 'code'
     Expand-Archive -LiteralPath $zip -DestinationPath $codeDir

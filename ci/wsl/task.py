@@ -13,13 +13,13 @@ import sys
 import time
 import uuid
 
-BASE = Path("/tmp/visor-wsl")
+USER = pwd.getpwnam("visorci")
+BASE = Path(USER.pw_dir) / ".visor-wsl"
 WORKSPACE = BASE / "project"
 INSTALL = Path("/opt/visor-wsl")
 OWNER = BASE / "owner.sock"
 COMPANION = BASE / "runtime/companion.sock"
 MARKER = "visor-wsl-scoped-task"
-USER = pwd.getpwnam("visorci")
 
 
 class Connection(http.client.HTTPConnection):

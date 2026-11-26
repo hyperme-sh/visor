@@ -1,6 +1,6 @@
 # hypermesh-visor
 
-`hypermesh-visor` is a local Linux daemon a supervisor starts for a desktop session. Open a session, then call view, watch, listen, mouse, and type. Calls without a live session fail. It is not a virtual machine. This version is Linux only.
+`hypermesh-visor` runs desktop sessions on Linux and in native Windows and macOS apps. Open a session, then use the desktop operations available on that platform. Calls without a live session fail. See [platform status](#platform-status) for supported targets and feature differences.
 
 Purpose, recipes, agent, skills, and secrets are sent when the session opens. Only secrets included in that call are loaded. Url/chain/ipfs *secret* sources stay 501. Vault `source: "mcp"` (role B) materializes via a short-lived MCP tool call.
 
@@ -21,23 +21,46 @@ See the [inverse MCP contract](docs/verb-contract.md#mcp-preference-and-inverse-
 for limits and supported tools.
 
 
-For the non-graphical build and its current limits, see [headless build](docs/headless.md).
+## Platform status
 
-| Linux option | Native architectures | Availability |
+The tables track implementation on `main`. Versioned releases contain the features
+at their tagged revision. Development bundles are built and checked in CI.
+
+### Build targets
+
+| Platform | CPU | Distribution |
 | --- | --- | --- |
-| Desktop glibc packages | x86_64, aarch64 | Published v0.1.0; current main has additional features. See [release packages](#release-packages). |
-| Alpine/static headless bundles | x86_64, aarch64 | APK/tarball CI artifacts and a runtime image built in CI; no published Alpine release yet. See [Alpine installation](docs/headless.md#alpine-installation). |
+| Linux desktop | x86_64, arm64 (aarch64) | glibc binary, Debian and RPM packages. See [release packages](#release-packages). |
+| Linux headless | x86_64, arm64 (aarch64) | Native glibc and musl CI builds, Alpine APK and static bundles, and a runtime image. Includes Conductor and omits desktop operations. See [headless builds](docs/headless.md). |
+| Windows desktop | x64 (x86_64) | Unsigned [development bundle and per-user installer](native/windows/README.md). |
+| Windows desktop | ARM64 | No native desktop packaging or CI build. |
+| macOS desktop | Apple Silicon (arm64) | [Development app and ZIP](native/macos/DISTRIBUTION.md) with a local ad-hoc signature. Developer ID signing and notarization are tracked in [#84](https://github.com/hyperme-sh/visor/issues/84). |
+| macOS desktop | Intel (x86_64) | No native desktop packaging or CI build. |
 
-Headless bundles include Conductor and omit desktop, D-Bus and Secret Service
-dependencies. Windows/macOS distribution and native Wayland input remain separate
-work; the headless option does not enable desktop automation.
+### Desktop features
 
-Useful links: [downloads](https://hyperme.sh/visor),
-[published Linux installation](docs/linux-v0.1.0.md),
-[release packages](#release-packages), [capability reference](docs/verb-contract.md),
-[MCP setup](docs/mcp-discovery.md), [container deployment](container/README.md), [remote bot polling](docs/remote-bots.md),
-[headless builds](docs/headless.md), and
-[report a problem](https://github.com/hyperme-sh/hypermesh-visor/issues/new).
+| Feature | Linux x86_64 and arm64 | Windows x64 | macOS arm64 |
+| --- | --- | --- | --- |
+| Screen capture (`view`, `watch`) | X11 or Wayland Screenshot portal | Native capture after local Allow | Native capture with Screen Recording permission and local Allow |
+| Mouse, keyboard and physical-input pause | X11. Native Wayland input is disabled pending [#17](https://github.com/hyperme-sh/visor/issues/17). | Native input and pause after local Allow. Elevated windows and secure desktops are refused. | Native input and pause after local Allow, with Accessibility and Input Monitoring permissions. |
+| Audio capture (`listen`) | PulseAudio-compatible desktop audio | Unavailable | Unavailable |
+| Companion UI | Floating and compact companion. On Wayland the window requires XWayland. | Tray icon and control window | Menu-bar icon and optional floating companion with Reduce Motion support |
+| Automation pointer | X11 overlay hides the system cursor while active | Click-through overlay alongside the system cursor | Click-through overlay alongside the system cursor |
+| [Installed companion packs](docs/companion-packs.md) | Appearance and cursor art plus prerecorded voices. Offline picker with independent appearance and voice choices. | Bundled art. Pack support tracked in [#362](https://github.com/hyperme-sh/visor/issues/362). | Bundled art. Pack support tracked in [#362](https://github.com/hyperme-sh/visor/issues/362). |
+| Session chooser and destinations | Session selection, forum, VS Code and CLI from the companion | Session selection, forum, VS Code and CLI via PowerShell or WSL | Session selection, forum and VS Code in the menu. CLI included in the bundle. |
+| [MCP discovery and connections](docs/mcp-discovery.md) | Source review, connection controls, profile and server editors | Native source review and connection controls | Native source review and connection controls |
+| MCP server transports | HTTP/SSE and stdio | HTTP/SSE. Isolated stdio worker tracked in [#29](https://github.com/hyperme-sh/visor/issues/29). | HTTP/SSE. Isolated stdio worker tracked in [#29](https://github.com/hyperme-sh/visor/issues/29). |
+| [Managed companion sets](docs/companion-sets.md) | Save and restore Linux container companions | Unavailable | Unavailable |
+
+Update the affected rows when a PR changes a desktop feature or adds a build
+target. Link outstanding platform gaps so they stay visible. The community pack
+catalog and downloads are tracked in [#359](https://github.com/hyperme-sh/visor/issues/359).
+
+See [downloads](https://hyperme.sh/visor),
+[Linux v0.1.0 installation](docs/linux-v0.1.0.md),
+[capability reference](docs/verb-contract.md), [MCP setup](docs/mcp-discovery.md),
+[container deployment](container/README.md), [remote bot polling](docs/remote-bots.md),
+and [report a problem](https://github.com/hyperme-sh/visor/issues/new).
 
 ## Linux build and tests
 
@@ -199,7 +222,9 @@ Lifting a pause is reserved for the companion process running as the same user. 
 
 `control.sock` is the control API: sessions, view, watch, listen, mouse, type, and start/stop/resume. The visor accepts a connection only when `SO_PEERCRED` uid equals its own uid, and then drops the connection before reading a request. That socket cannot lift a user pause. `companion.sock` is separate. The companion polls and posts there, with the same uid check. `resume`, and `start` or `stop` while the gate is paused, are accepted only on the companion socket. The same actions on the control socket are refused, including with a header, and deleting the driving session does not clear the pause. Pause itself is allowed on the control socket. `start` while the gate is off needs a companion-socket poll inside the watchdog window, and returns 503 `no recent companion poll` otherwise. A transient accept error is retried with backoff. A dead listener still stops the loop.
 
-TCP is off unless `--tcp` or `HYPERMESH_TCP=1` is set. The port is loopback only (`--listen`, default `127.0.0.1:9847`). When TCP is enabled, the visor binds that port before it replaces a stale socket file, writes a new random bearer to `api.token` (mode 0600) in the runtime directory, and rejects every request that does not present it with 401 before any handler runs, including `/health` and unknown paths. The compare does not stop at the first mismatched byte. The bearer has the same privileges as the control socket: it cannot lift a user pause. When TCP is off, that token file is removed. Another OS user cannot connect to either socket and cannot read the token. Loopback alone does not keep that user out, which is why the port is closed unless this opt-in is set. `hypermesh-desktop-mcp`, the `hypermesh` CLI prompt, and `ci/verbs.sh` use the control socket unless `HYPERMESH_VISOR_URL` (or `--visor`) names the TCP base. Windows and macOS need the same boundary with a named-pipe ACL and an XPC or peer audit token, tracked in issue #18. `companion.toml` is TOML: `sleep_after_secs = 1_800` and `automation_resume_secs = 600 # ten minutes` are read as written. A write replaces the root key in the parsed table and saves it, so a trailing table keeps its own keys. An invalid value logs a warning and that setting stays at its default.
+TCP is off unless `--tcp` or `HYPERMESH_TCP=1` is set. The port is loopback only (`--listen`, default `127.0.0.1:9847`). When TCP is enabled, the visor binds that port before it replaces a stale socket file, writes a new random bearer to `api.token` (mode 0600) in the runtime directory, and rejects every request that does not present it with 401 before any handler runs, including `/health` and unknown paths. The compare does not stop at the first mismatched byte. The bearer has the same privileges as the control socket: it cannot lift a user pause. When TCP is off, that token file is removed. Another OS user cannot connect to either socket and cannot read the token. Loopback alone does not keep that user out, which is why the port is closed unless this opt-in is set. `hypermesh-desktop-mcp`, the `hypermesh` CLI prompt, and `ci/verbs.sh` use the control socket unless `HYPERMESH_VISOR_URL` (or `--visor`) names the TCP base. `companion.toml` is TOML: `sleep_after_secs = 1_800` and `automation_resume_secs = 600 # ten minutes` are read as written. A write replaces the root key in the parsed table and saves it, so a trailing table keeps its own keys. An invalid value logs a warning and that setting stays at its default.
+
+The native Windows app uses protected current-user named pipes. The native macOS app uses same-user Unix sockets. Each app keeps resume authority in its native UI.
 
 Away from an automation the bug cursor stays off unless `bug_cursor` is true.
 

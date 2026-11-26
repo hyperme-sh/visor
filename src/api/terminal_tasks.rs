@@ -172,6 +172,7 @@ struct Run {
     status: &'static str,
     exit_code: Option<i32>,
     output: Vec<u8>,
+    discarded_output: usize,
     truncated: bool,
     cancel: bool,
 }
@@ -182,11 +183,16 @@ impl Run {
     }
 
     fn page(&self, id: Uuid, cursor: usize, allowed: bool) -> Result<Value, ApiError> {
-        let end = self.output.len().min(cursor.saturating_add(PAGE_SIZE));
-        let output = self
-            .output
-            .get(cursor..end)
-            .ok_or_else(|| ApiError::bad("Invalid output cursor"))?;
+        let (end, output) = if self.status == "revoked" && cursor <= self.discarded_output {
+            (cursor, &[][..])
+        } else {
+            let end = self.output.len().min(cursor.saturating_add(PAGE_SIZE));
+            let output = self
+                .output
+                .get(cursor..end)
+                .ok_or_else(|| ApiError::bad("Invalid output cursor"))?;
+            (end, output)
+        };
         Ok(json!({
             "id": id, "session": self.session, "status": self.status, "exit_code": self.exit_code,
             "access": if allowed { "ready" } else { "paused" },
@@ -297,6 +303,7 @@ pub(super) async fn exchange(
                 status: "running",
                 exit_code: None,
                 output: Vec::new(),
+                discarded_output: 0,
                 truncated: false,
                 cancel: false,
             };
@@ -491,6 +498,7 @@ async fn supervise(
         records.remove(&id);
     } else if let Some(run) = records.get_mut(&id) {
         if status == "revoked" {
+            run.discarded_output = run.output.len();
             run.output.clear();
         }
         run.status = status;
@@ -516,6 +524,30 @@ mod tests {
             json!({"workspace":workspace,"operation":operation}),
         )
         .await
+    }
+
+    #[test]
+    fn revoked_output_keeps_issued_cursors_without_revealing_bytes() {
+        let run = Run {
+            session: Uuid::new_v4(),
+            binding: String::new(),
+            revision: String::new(),
+            status: "revoked",
+            exit_code: None,
+            output: Vec::new(),
+            discarded_output: 32,
+            truncated: false,
+            cancel: false,
+        };
+        let id = Uuid::new_v4();
+        for cursor in [0, 17, 32] {
+            let page = run.page(id, cursor, true).ok().expect("issued cursor");
+            assert_eq!(page["status"], "revoked");
+            assert_eq!(page["cursor"], cursor);
+            assert_eq!(page["output_base64"], "");
+            assert_eq!(page["more"], false);
+        }
+        assert!(run.page(id, 33, true).is_err());
     }
 
     #[tokio::test]

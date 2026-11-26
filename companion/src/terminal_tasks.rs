@@ -19,8 +19,40 @@ fn action(scope: &Value, kind: &str, id: Uuid) -> Value {
     json!({"type":kind,"boot":scope["boot"],"session":scope["session"],"binding":scope["binding"],"id":id})
 }
 
+#[derive(Default)]
+struct OutputDecoder {
+    pending: Vec<u8>,
+}
+
+impl OutputDecoder {
+    fn render(&mut self, bytes: &[u8], finished: bool) -> String {
+        self.pending.extend_from_slice(bytes);
+        let length = self.pending.len();
+        let mut end = length;
+        if !finished {
+            // An incomplete UTF-8 prefix occupies at most three trailing bytes.
+            for suffix in 1..=length.min(3) {
+                let start = length - suffix;
+                if std::str::from_utf8(&self.pending[start..])
+                    .is_err_and(|error| error.valid_up_to() == 0 && error.error_len().is_none())
+                {
+                    end = start;
+                    break;
+                }
+            }
+        }
+        let text = String::from_utf8_lossy(&self.pending[..end])
+            .chars()
+            .filter(|c| matches!(c, '\n' | '\t') || !c.is_control())
+            .collect();
+        self.pending.drain(..end);
+        text
+    }
+}
+
 fn watch(workspace: &str, scope: &Value, id: Uuid, mut cursor: u64) -> Result<bool, String> {
     let mut prior_status = String::new();
+    let mut decoder = OutputDecoder::default();
     loop {
         let mut request = action(scope, "read", id);
         request["cursor"] = json!(cursor);
@@ -48,11 +80,8 @@ fn watch(workspace: &str, scope: &Value, id: Uuid, mut cursor: u64) -> Result<bo
                     .ok_or("Invalid terminal output")?,
             )
             .map_err(|_| "Invalid terminal output")?;
-        // Task output is data. In particular, do not replay escape sequences.
-        let safe: String = String::from_utf8_lossy(&output)
-            .chars()
-            .filter(|c| matches!(c, '\n' | '\t') || !c.is_control())
-            .collect();
+        let finished = page["more"] == false && status != "running";
+        let safe = decoder.render(&output, finished);
         let mut stdout = std::io::stdout().lock();
         stdout
             .write_all(safe.as_bytes())
@@ -122,4 +151,18 @@ pub(crate) fn run(args: Vec<String>) -> Result<bool, String> {
         _ => return Err(USAGE.into()),
     }
     Ok(true)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn output_decoder_preserves_unicode_across_pages_and_filters_controls() {
+        let mut decoder = OutputDecoder::default();
+        assert_eq!(decoder.render(&[b'A', 0xff, 0xf0, 0x9f], false), "A�");
+        assert_eq!(decoder.render(&[0x8c], false), "");
+        assert_eq!(decoder.render(&[0x8d, 0x1b, b'\n'], false), "🌍\n");
+        assert_eq!(decoder.render(&[0xe2], true), "�");
+    }
 }

@@ -26,11 +26,11 @@ if "$visor" catalog install llama2-c "$machine" wrong-digest; then
   echo 'Installation accepted a changed plan'
   exit 1
 fi
-test ! -e "$HYPERMESH_CONFIG_DIR"
+[[ ! -e "$HYPERMESH_CONFIG_DIR" ]]
 installed="$("$visor" catalog install llama2-c "$machine" "$digest")"
 runner="$(jq -r .executable <<<"$installed")"
 revision="$(jq -r .installation.id <<<"$installed")"
-test -x "$runner"
+[[ -x "$runner" ]]
 cmp src/tool_catalog/llama2c/LICENSE "$(dirname "$runner")/LICENSE"
 actual="$("$visor" catalog health llama2-c)"
 printf '%s' "$actual" | jq -e --arg machine "$machine" --arg revision "$revision" '
@@ -38,6 +38,13 @@ printf '%s' "$actual" | jq -e --arg machine "$machine" --arg revision "$revision
     and .probe == "synthetic_checkpoint" and .generated_tokens == 2 and .local_only
 '
 printf 'llama2.c generated two expected tokens on the selected %s machine\n' "$(jq -r .plan.machine.architecture <<<"$plan")"
+
+printf '%s' 'truncated header' >"$scratch/truncated.bin"
+if "$runner" "$scratch/truncated.bin" -n 2 2>"$scratch/checkpoint-error"; then
+  echo 'Runner accepted a truncated checkpoint header'
+  exit 1
+fi
+[[ "$(cat "$scratch/checkpoint-error")" == 'Could not read checkpoint header' ]]
 
 # Confirm that a damaged binary cannot pass health and can still be uninstalled.
 chmod u+w "$runner"
@@ -49,6 +56,6 @@ fi
 mkdir "$HYPERMESH_CONFIG_DIR/models"
 printf '%s' 'owner data' >"$HYPERMESH_CONFIG_DIR/models/keep"
 "$visor" catalog remove llama2-c "$machine" "$revision" | jq -e '.state == "removed"'
-test ! -e "$runner"
-test "$(cat "$HYPERMESH_CONFIG_DIR/models/keep")" = 'owner data'
+[[ ! -e "$runner" ]]
+[[ "$(cat "$HYPERMESH_CONFIG_DIR/models/keep")" == 'owner data' ]]
 "$visor" catalog health llama2-c | jq -e '.state == "not_installed"'

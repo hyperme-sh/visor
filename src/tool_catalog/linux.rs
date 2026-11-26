@@ -19,7 +19,7 @@ const ID: &str = "llama2-c";
 const REVISION: &str = "350e04fe35433e6d2941dce5a1f53308f87058eb";
 const SOURCE: &[u8] = include_bytes!("llama2c/run.c");
 const LICENSE: &[u8] = include_bytes!("llama2c/LICENSE");
-const SOURCE_HASH: &str = "9c4f2d5c6ae01b71726d1cc37530d71e60bff0ec7cc012565f16a43c1ca658bd";
+const SOURCE_HASH: &str = "2e090e3b853dda20b2806cdf1f7070c9f19b533e68138c1f5024ab92c98d8af3";
 const COMPILER: &str = "/usr/bin/cc";
 const MANAGED: [&str; 3] = ["llama2-c", "installation.json", "LICENSE"];
 const STORAGE: &str = "Could not access the private catalog store";
@@ -378,6 +378,7 @@ fn build_and_probe(compiler: &Path, stage: &Path) -> Result<(), &'static str> {
     cc.env_clear()
         .env("PATH", "/usr/bin:/bin")
         .current_dir(stage)
+        .stderr(Stdio::inherit())
         .args([
             "-std=c11",
             "-D_POSIX_C_SOURCE=200809L",
@@ -436,7 +437,6 @@ fn execute(
     command
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
         .kill_on_drop(true);
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()

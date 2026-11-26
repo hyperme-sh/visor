@@ -15,7 +15,7 @@ Local AI entries track model-weight licensing separately.
 
 ### Install the local CPU runner
 
-The managed entry builds the pinned MIT-licensed [llama2.c source](../src/tool_catalog/llama2c/NOTICE.md)
+The managed entry builds a pinned MIT-licensed [llama2.c revision with Visor hardening](../src/tool_catalog/llama2c/NOTICE.md)
 on the selected Linux machine. It supports x86-64 and ARM64 with a system C
 compiler, static libc development files, and a functioning Bubblewrap sandbox.
 Use the unprivileged account that owns the Visor configuration on that machine.
@@ -42,7 +42,7 @@ continue through the configured Conductor and AIuditor route.
 
 Install prints the executable path. To use the standalone runner with a
 compatible checkpoint, keep the checkpoint and tokenizer in your own storage
-and review their separate terms. The ordinary upstream CLI accepts those files
+and review their separate terms. The runner accepts those files
 with `RUNNER CHECKPOINT -z TOKENIZER`.
 
 ### Remove an installation

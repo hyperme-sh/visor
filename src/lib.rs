@@ -54,6 +54,8 @@ pub mod plugins;
 mod prompt;
 pub mod permission_templates;
 pub mod local_reads;
+#[doc(hidden)]
+pub mod workspace_runtime;
 mod session;
 mod stream;
 pub mod telemetry;

@@ -88,3 +88,24 @@ input means the terminal accepted the reported bytes. An interrupted client
 reattaches by ID and cursor. The clients discard unsent keystrokes when an
 attachment loses input access. Visor checks the current grant for every
 operation and closes the terminal on pause, revocation, or cancellation.
+
+## WSL
+
+Use the Linux Visor runtime and companion inside the active WSL distribution.
+Start Visor with the distribution's `WSL_DISTRO_NAME` in its environment and
+use a private companion socket inside the distribution. Use a shell from the
+same distribution for the CLI, and pass the absolute Linux workspace path.
+
+```sh
+hypermesh-companion --terminal-task /home/developer/project context
+```
+
+The context includes `wsl_distro` and the workspace. Visor requires the
+distribution to match on every terminal request. The existing workspace
+assignment, local session approval, and task declaration still apply. If
+Visor is stopped or the binding differs, the command reports that the
+workspace is unavailable.
+
+In a VS Code WSL window, install Hypermesh in the WSL extension host and set
+`hypermesh.companionExecutable` in **Remote Settings** to the Linux companion
+path. The terminal task picker shows the distribution, workspace and access.

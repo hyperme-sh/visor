@@ -101,9 +101,17 @@ and execution. The issue-read fixture runs on that container's loopback.
 
 For an on-demand live check, give the `Live GitHub issue contract`
 workflow on `main` the published TEST index digest and the token owner's
-numeric GitHub user ID. The repository Actions secret
-`VISOR_LIVE_GITHUB_ISSUE_TOKEN` supplies a fine-grained token scoped to this
-repository with Issues read access. The native jobs read the public Visor issue
+numeric GitHub user ID. With that run's ID, send a fine-grained token scoped
+to this repository with Issues read access from a local file.
+
+```sh
+python3 ci/container/send-live-github-issue-token.py RUN_ID /path/to/credential-file
+```
+
+Each runner creates a temporary key and publishes its public key. The sender
+uploads the token encrypted separately for each runner. The runners decrypt it
+in memory and pass it to their session vaults. The public keys and encrypted
+artifacts expire after one day. The native jobs read the public Visor issue
 [#353](https://github.com/hyperme-sh/visor/issues/353) directly and through
 explicitly opted-in Code Mode, using the same overlay on both architectures.
 

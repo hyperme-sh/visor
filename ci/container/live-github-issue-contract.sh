@@ -10,14 +10,6 @@ if [[ ! "$PUBLISHED_TEST_INDEX" =~ ^sha256:[a-f0-9]{64}$ || ! "$LIVE_GITHUB_ISSU
     echo 'Set the published TEST index digest and numeric GitHub account ID.' >&2
     exit 2
 fi
-if [[ ! "$LIVE_GITHUB_ISSUE_TOKEN" =~ ^github_pat_[A-Za-z0-9_]{20,255}$ ]]; then
-    echo 'Set VISOR_LIVE_GITHUB_ISSUE_TOKEN to a fine-grained Issues read token.' >&2
-    exit 2
-fi
-# Keep the credential out of subprocess environments and container metadata.
-token="$LIVE_GITHUB_ISSUE_TOKEN"
-unset LIVE_GITHUB_ISSUE_TOKEN
-
 export VISOR_IMAGE="ghcr.io/hyperme-sh/hypermesh-visor@$PUBLISHED_TEST_INDEX"
 docker pull "$VISOR_IMAGE"
 test "$(docker image inspect --format '{{.Architecture}}' "$VISOR_IMAGE")" = "$EXPECTED_ARCH"
@@ -58,4 +50,28 @@ test "$(docker inspect --format '{{.HostConfig.NetworkMode}}' "$id")" = none
 probe=/home/bot/.local/state/hypermesh/github-issue-probe.py
 "${compose[@]}" exec -T writer sh -ec 'umask 077; cat > "$1"' sh "$probe" \
     < ci/container/published-github-issue-probe.py
+
+artifacts="repos/$GITHUB_REPOSITORY/actions/artifacts"
+envelope_name="github-issue-envelopes-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+echo 'Waiting for the token encrypted to this job’s ephemeral public key.'
+artifact_id=
+for _ in {1..36}; do
+    artifact_id="$(gh api --method GET "$artifacts" -f "name=$envelope_name" | jq -r \
+        --arg revision "$GITHUB_SHA" '[.artifacts[] | select(.expired == false and .workflow_run.head_sha == $revision and .workflow_run.head_branch == "main")] | first | .id // empty')"
+    if [[ -n "$artifact_id" ]]; then break; fi
+    sleep 10
+done
+if [[ ! "$artifact_id" =~ ^[0-9]+$ ]]; then
+    echo 'No encrypted token arrived for this run attempt.' >&2
+    exit 2
+fi
+gh api "$artifacts/$artifact_id/zip" > "$scratch/envelopes.zip"
+# Hold the plaintext in this shell until it is piped into the session vault.
+token="$(unzip -p "$scratch/envelopes.zip" "$EXPECTED_ARCH" | base64 --decode | \
+    openssl pkeyutl -decrypt -inkey "$RUNNER_TEMP/github-issue-key.pem" \
+        -pkeyopt rsa_padding_mode:oaep -pkeyopt rsa_oaep_md:sha256 -pkeyopt rsa_mgf1_md:sha256)"
+if [[ ! "$token" =~ ^github_pat_[A-Za-z0-9_]{20,255}$ ]]; then
+    echo 'The encrypted token must contain a fine-grained GitHub Issues credential.' >&2
+    exit 2
+fi
 printf '%s' "$token" | "${compose[@]}" exec -T writer python3 "$probe" "$LIVE_GITHUB_ISSUE_ACCOUNT"

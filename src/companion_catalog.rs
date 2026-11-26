@@ -4,6 +4,7 @@ use std::collections::HashSet;
 use std::fs::{self, File};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 use std::time::Duration;
 
 use base64::{engine::general_purpose::STANDARD, Engine as _};
@@ -19,6 +20,7 @@ const CATALOG_LIMIT: usize = 256 * 1024;
 const ARCHIVE_LIMIT: usize = 100 * 1024 * 1024;
 const IMAGE_LIMIT: usize = 1024 * 1024;
 const VOICE_LIMIT: usize = 300 * 1024;
+static RECOVERY: Mutex<()> = Mutex::new(());
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -392,6 +394,9 @@ fn installed(config: &Path, id: &str) -> Result<bool, String> {
 }
 
 pub fn recover_installs(config: &Path) -> Result<(), String> {
+    // Native startup loads the two media concurrently. Only one request may
+    // scan and restore backups before the other tries the nonblocking file lock.
+    let _recovery = RECOVERY.lock().map_err(|_| "Companion pack recovery failed.")?;
     let root = config.join("companion-packs");
     if !entry_kind(&root)? {
         return Ok(());
@@ -607,6 +612,24 @@ mod tests {
         let mut archive = source;
         archive["files"].as_array_mut().unwrap().remove(1);
         assert!(Archive::parse(&serde_json::to_vec(&archive).unwrap()).is_err());
+    }
+
+    #[test]
+    fn concurrent_native_loads_can_all_recover_the_same_install() {
+        let config = Staging::new(&std::env::temp_dir()).unwrap();
+        let root = config.0.join("companion-packs");
+        fs::create_dir_all(root.join(".previous-desk-bot")).unwrap();
+        let readers = 8;
+        let start = std::sync::Barrier::new(readers);
+        std::thread::scope(|scope| {
+            for _ in 0..readers {
+                scope.spawn(|| {
+                    start.wait();
+                    recover_installs(&config.0).unwrap();
+                    assert!(root.join("desk-bot").is_dir());
+                });
+            }
+        });
     }
 
     #[test]

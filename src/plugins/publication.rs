@@ -1,7 +1,7 @@
 //! Verify a signed publication without executing its code or granting a tool.
 use super::{private_bytes, schema, slug, Descriptor, Error as PackageError, Package, Tool};
 use base64::{engine::general_purpose::STANDARD, Engine};
-use ring::signature::{UnparsedPublicKey, ED25519};
+use ring::signature::{Ed25519KeyPair, KeyPair, UnparsedPublicKey, ED25519};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::path::Path;
@@ -106,7 +106,7 @@ impl Metadata {
     }
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct Envelope {
     statement: String,
@@ -115,7 +115,7 @@ struct Envelope {
     executable: String,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct Statement {
     version: u32,
@@ -226,6 +226,56 @@ fn verify_authority(
         return Err(Error::Publisher);
     }
     Ok(())
+}
+
+pub(super) fn sign_package(
+    path: &Path,
+    signing_key: &[u8],
+    source: &str,
+    publisher_domain: Option<&str>,
+) -> Result<(Vec<u8>, String), Error> {
+    hypermesh_local_storage::check_dir(path).map_err(|_| Error::Source)?;
+    source_url(source)?;
+    let key =
+        Ed25519KeyPair::from_pkcs8_maybe_unchecked(signing_key).map_err(|_| Error::Signature)?;
+    let manifest = private_bytes(&path.join("manifest.json"), 64 * 1024)?;
+    let manifest_sha256 = digest(&manifest);
+    let descriptor = Descriptor::parse(&manifest, &manifest_sha256)?;
+    let executable = private_bytes(&path.join("plugin"), super::MAX_EXECUTABLE)?;
+    descriptor.check_executable(&executable)?;
+    verification(&descriptor.manifest.id, publisher_domain)?;
+    let publisher_key = STANDARD.encode(key.public_key().as_ref());
+    let statement = Statement {
+        version: 1,
+        plugin_id: descriptor.manifest.id,
+        package_version: descriptor.manifest.package_version,
+        source: source.into(),
+        manifest_sha256,
+        publisher_key: publisher_key.clone(),
+        publisher_domain: publisher_domain.map(str::to_owned),
+    };
+    Ok((
+        seal(&key, &statement, &manifest, &executable)?,
+        publisher_key,
+    ))
+}
+
+fn seal(
+    key: &Ed25519KeyPair,
+    statement: &Statement,
+    manifest: &[u8],
+    executable: &[u8],
+) -> Result<Vec<u8>, Error> {
+    let statement = serde_json::to_vec(statement).map_err(|_| Error::Signature)?;
+    let mut message = SIGNATURE_DOMAIN.to_vec();
+    message.extend_from_slice(&statement);
+    serde_json::to_vec(&Envelope {
+        statement: STANDARD.encode(statement),
+        signature: STANDARD.encode(key.sign(&message).as_ref()),
+        manifest: STANDARD.encode(manifest),
+        executable: STANDARD.encode(executable),
+    })
+    .map_err(|_| Error::Signature)
 }
 
 impl Publication {
@@ -355,8 +405,7 @@ impl Publication {
 #[cfg(test)]
 pub(crate) mod fixtures {
     use super::*;
-    use ring::signature::{Ed25519KeyPair, KeyPair};
-    use serde_json::{json, Value};
+    use serde_json::Value;
 
     pub(crate) fn sign(
         manifest: &Value,
@@ -365,28 +414,19 @@ pub(crate) mod fixtures {
         seed: u8,
     ) -> (Vec<u8>, String) {
         let key = Ed25519KeyPair::from_seed_unchecked(&[seed; 32]).unwrap();
-        let public = STANDARD.encode(key.public_key().as_ref());
+        let publisher_key = STANDARD.encode(key.public_key().as_ref());
         let manifest_bytes = serde_json::to_vec(manifest).unwrap();
-        let statement = serde_json::to_vec(&json!({
-            "version":1,
-            "plugin_id":manifest["id"],
-            "package_version":manifest["package_version"],
-            "source":"https://packages.example.org/byte-count.visor-plugin",
-            "manifest_sha256":digest(&manifest_bytes),
-            "publisher_key":public,
-            "publisher_domain":domain,
-        }))
-        .unwrap();
-        let mut message = SIGNATURE_DOMAIN.to_vec();
-        message.extend_from_slice(&statement);
-        let package = serde_json::to_vec(&json!({
-            "statement":STANDARD.encode(&statement),
-            "signature":STANDARD.encode(key.sign(&message).as_ref()),
-            "manifest":STANDARD.encode(&manifest_bytes),
-            "executable":STANDARD.encode(binary),
-        }))
-        .unwrap();
-        (package, public)
+        let statement = Statement {
+            version: 1,
+            plugin_id: manifest["id"].as_str().unwrap().into(),
+            package_version: manifest["package_version"].as_str().unwrap().into(),
+            source: "https://packages.example.org/byte-count.visor-plugin".into(),
+            manifest_sha256: digest(&manifest_bytes),
+            publisher_key: publisher_key.clone(),
+            publisher_domain: domain.map(str::to_owned),
+        };
+        let package = seal(&key, &statement, &manifest_bytes, binary).unwrap();
+        (package, publisher_key)
     }
 }
 

@@ -386,6 +386,17 @@ impl Grants {
     }
 }
 
+/// Sign the existing package format using an unencrypted Ed25519 PKCS#8 key.
+pub fn build_publication(
+    directory: &Path,
+    signing_key: &[u8],
+    source: &str,
+    publisher_domain: Option<&str>,
+) -> Result<(Vec<u8>, String), String> {
+    publication::sign_package(directory, signing_key, source, publisher_domain)
+        .map_err(publication::Error::message)
+}
+
 /// Test a package in the production sandbox with caller-supplied fixture data.
 /// This entry point has no Visor session, workspace access, or policy credentials.
 pub async fn conformance(

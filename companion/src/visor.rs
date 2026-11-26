@@ -617,7 +617,7 @@ pub fn plugin_request(method: &str, path: &str, body: &serde_json::Value) -> Res
     );
     let socket = socket_path().ok_or("Companion socket unavailable")?;
     let Exchange::Body(response) = exchange_read_bound(&socket, &request, Duration::from_secs(35), 3 * 1024 * 1024) else {
-        return Err("No plugin operation confirmed; refresh installed plugins".into());
+        return Err("Refresh installed plugins to check whether the operation completed".into());
     };
     let content = body_of(&response).unwrap_or_default();
     if status_ok(&response) {

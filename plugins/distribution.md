@@ -17,15 +17,17 @@ Keep the path unchanged after publication.
 Create a dedicated publisher key once and keep it in your signing environment.
 
 ```sh
-openssl genpkey -algorithm Ed25519 -out publisher.pem
-chmod 600 publisher.pem
-python3 plugins/publish.py --package ./package --key publisher.pem \
-  --source https://packages.example.org/plugin-1.2.0.visor-plugin \
-  --output plugin-1.2.0.visor-plugin
+umask 077
+openssl genpkey -algorithm Ed25519 -outform DER -out publisher.der
+cargo build --locked --bin hypermesh-plugin-publish
+target/debug/hypermesh-plugin-publish ./package \
+  https://packages.example.org/plugin-1.2.0.visor-plugin \
+  < publisher.der > plugin-1.2.0.visor-plugin
 ```
 
-Upload the resulting artifact to the declared URL. Share its URL and
-`publication_sha256`. Each package version names immutable bytes. Use a new
+Use an owner-only package directory and files. The command writes the
+publication to stdout and prints its public key and digest to stderr. Upload
+the artifact to the declared URL and share its URL and `publication_sha256`. Each package version names immutable bytes. Use a new
 version for a changed artifact. For an offline handoff, the installer also accepts
 an absolute path to a private copy of the exact artifact.
 
@@ -41,7 +43,7 @@ There is a 12 MiB publication limit and an 8 MiB executable limit.
 A community publisher uses a signing key and can publish without a domain
 proof. An app owner controls the HTTPS origin for its reverse-domain plugin
 namespace. For example, `example.org` can authorize keys for IDs starting
-with `org.example.`. Pass `--publisher-domain example.org` when signing and
+with `org.example.`. Pass `example.org` after the source URL when signing and
 serve this JSON at `https://example.org/.well-known/visor-plugin-publisher.json`.
 
 ```json

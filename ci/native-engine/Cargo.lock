@@ -1000,6 +1000,7 @@ dependencies = [
  "libc",
  "libloading",
  "png",
+ "ring",
  "sentry-core",
  "serde",
  "serde_json",

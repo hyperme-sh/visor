@@ -33,6 +33,7 @@ private struct PackCatalog: Decodable, Sendable {
 }
 
 private struct PackClip: Decodable, Sendable {
+    let key: String
     let frames: [String]
     let frame_ms: UInt64
     let loop: Bool
@@ -44,10 +45,10 @@ private struct PackBundle: Decodable, Sendable {
     let vibe: String?
     let sleep_after_ms: UInt64
     let frames: [String: Data]?
-    let clips: [String: PackClip]?
+    let clips: [PackClip]?
     let cursor: [String: Data]?
     let audio: [String: Data]?
-    let cues: [String: String]?
+    let cues: [[String]]?
 }
 
 private struct PackCues: Decodable {
@@ -71,8 +72,8 @@ func nativePackFrameIndex(count: Int, interval: UInt64, loop: Bool, elapsed: UIn
 
     private struct CueState: Equatable {
         let state: String
-        let verb: String?
-        let mode: String?
+        let verb: Data?
+        let mode: Data?
     }
 
     private struct DriveID: Equatable {
@@ -81,9 +82,10 @@ func nativePackFrameIndex(count: Int, interval: UInt64, loop: Bool, elapsed: UIn
         let sequence: UInt64
     }
 
-    private var clips: [String: DisplayClip] = [:]
+    // Format 1 matches the exact UTF-8 selector, including distinct NFC/NFD keys.
+    private var clips: [Data: DisplayClip] = [:]
     private var cursorArt: [String: NSImage] = [:]
-    private var cues: [String: String] = [:]
+    private var cues: [Data: String] = [:]
     private var recordings: [String: Data] = [:]
     private var mood: String?, vibe: String?, verb: String?, mode: String?, notice: String?
     private var sessionIdle = UInt64.max
@@ -95,7 +97,7 @@ func nativePackFrameIndex(count: Int, interval: UInt64, loop: Bool, elapsed: UIn
     private var driveAt: UInt64 = 0
     private var motion: [String: Any]?
     private var resolved: CueState?
-    private var clipKey: String?
+    private var clipKey: Data?
     private var clipAt: UInt64 = 0
     private var selectedAudio: String?
     private var player: NSSound?
@@ -145,15 +147,18 @@ func nativePackFrameIndex(count: Int, interval: UInt64, loop: Bool, elapsed: UIn
                 image.size = NSSize(width: image.size.width / image.size.height * 22, height: 22)
                 return image
             }
-            clips = (pack.clips ?? [:]).compactMapValues { value in
+            clips.removeAll()
+            for value in pack.clips ?? [] {
                 let images = value.frames.compactMap { frames[$0] }
-                guard !images.isEmpty, images.count == value.frames.count else { return nil }
-                return DisplayClip(frames: images, interval: value.frame_ms, loop: value.loop)
+                guard !images.isEmpty, images.count == value.frames.count else { continue }
+                clips[Data(value.key.utf8)] = DisplayClip(frames: images, interval: value.frame_ms, loop: value.loop)
             }
             cursorArt = (pack.cursor ?? [:]).compactMapValues { NSImage(data: $0) }
             clipKey = nil
         } else {
-            recordings = pack.audio ?? [:]; cues = pack.cues ?? [:]
+            recordings = pack.audio ?? [:]
+            cues.removeAll()
+            for entry in pack.cues ?? [] where entry.count == 2 { cues[Data(entry[0].utf8)] = entry[1] }
             selectAudio(nil)
         }
         resolved = nil
@@ -190,7 +195,7 @@ func nativePackFrameIndex(count: Int, interval: UInt64, loop: Bool, elapsed: UIn
         else if running { state = "automation" }
         else if min(sessionElapsed, now - lastInput) >= sleepAfter { state = "sleeping" }
         else { state = "idle" }
-        let signal = CueState(state: state, verb: verb, mode: mode)
+        let signal = CueState(state: state, verb: verb.map { Data($0.utf8) }, mode: mode.map { Data($0.utf8) })
         let wantsCursor = state == "automation" && !cursorArt.isEmpty
         var cursor: NSImage?
         if resolved != signal || wantsCursor {
@@ -207,9 +212,10 @@ func nativePackFrameIndex(count: Int, interval: UInt64, loop: Bool, elapsed: UIn
             if let cue = packRequest(fields, as: PackCues.self) {
                 if resolved != signal {
                     resolved = signal; label = cue.label
-                    let next = cue.keys.first { clips[$0] != nil }
+                    let keys = cue.keys.map { Data($0.utf8) }
+                    let next = keys.first { clips[$0] != nil }
                     if clipKey != next { clipKey = next; clipAt = now }
-                    selectAudio(cue.keys.lazy.compactMap { self.cues[$0] }.first { recordings[$0] != nil })
+                    selectAudio(keys.lazy.compactMap { self.cues[$0] }.first { recordings[$0] != nil })
                 }
                 if let key = cue.cursor { cursor = cursorArt[key] ?? cursorArt["pointer"] }
             } else {

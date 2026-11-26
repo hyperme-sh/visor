@@ -207,13 +207,13 @@ internal sealed class CompanionPacks : IDisposable
         {
             frames = Images(pack.GetProperty("frames"));
             cursor = Images(pack.GetProperty("cursor"));
-            foreach (var entry in pack.GetProperty("clips").EnumerateObject())
+            foreach (var entry in pack.GetProperty("clips").EnumerateArray())
             {
-                var selected = entry.Value.GetProperty("frames").EnumerateArray()
+                var selected = entry.GetProperty("frames").EnumerateArray()
                     .Select(frame => frames.GetValueOrDefault(frame.GetString()!)).ToArray();
                 if (selected.Length == 0 || selected.Any(frame => frame == null)) continue;
-                clips[entry.Name] = new(selected.Select(frame => frame!).ToArray(),
-                    entry.Value.GetProperty("frame_ms").GetInt64(), entry.Value.GetProperty("loop").GetBoolean());
+                clips[entry.GetProperty("key").GetString()!] = new(selected.Select(frame => frame!).ToArray(),
+                    entry.GetProperty("frame_ms").GetInt64(), entry.GetProperty("loop").GetBoolean());
             }
         }
 
@@ -243,8 +243,8 @@ internal sealed class CompanionPacks : IDisposable
 
     private sealed class Voice(JsonElement pack)
     {
-        private readonly Dictionary<string, string> cues = pack.GetProperty("cues").EnumerateObject()
-            .ToDictionary(entry => entry.Name, entry => entry.Value.GetString()!);
+        private readonly Dictionary<string, string> cues = pack.GetProperty("cues").EnumerateArray()
+            .ToDictionary(entry => entry[0].GetString()!, entry => entry[1].GetString()!);
         private readonly Dictionary<string, byte[]> audio = pack.GetProperty("audio").EnumerateObject()
             .ToDictionary(entry => entry.Name, entry => entry.Value.GetBytesFromBase64());
         internal string? Select(string[] keys) => keys.Select(key => cues.GetValueOrDefault(key))

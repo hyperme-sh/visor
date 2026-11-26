@@ -205,7 +205,7 @@ fn load(config: &Path, medium: Medium, id: &str) -> Result<Value, ()> {
 
 fn appearance(pack: &Pack, id: &str) -> Value {
     let mut frames = BTreeMap::new();
-    let mut clips = BTreeMap::new();
+    let mut clips = Vec::new();
     for (key, entry) in &pack.manifest.sprites {
         if !packs::valid_key(key) {
             continue;
@@ -230,10 +230,7 @@ fn appearance(pack: &Pack, id: &str) -> Value {
                 .is_some()
         });
         if usable {
-            clips.insert(
-                key,
-                json!({"frames":spec.frames,"frame_ms":spec.frame_ms(),"loop":spec.looped}),
-            );
+            clips.push(json!({"key":key,"frames":spec.frames,"frame_ms":spec.frame_ms(),"loop":spec.looped}));
         }
     }
     let cursor: BTreeMap<_, _> = CURSORS
@@ -249,7 +246,7 @@ fn appearance(pack: &Pack, id: &str) -> Value {
 
 fn voice(pack: &Pack, id: &str) -> Value {
     let mut files = BTreeMap::new();
-    let mut cues = BTreeMap::new();
+    let mut cues = Vec::new();
     for (key, entry) in &pack.manifest.voice {
         let Some(name) = entry.as_ref().and_then(Value::as_str) else {
             continue;
@@ -264,7 +261,7 @@ fn voice(pack: &Pack, id: &str) -> Value {
             .or_insert_with(|| pack.voice(name).map(wav))
             .is_some()
         {
-            cues.insert(key, name);
+            cues.push(json!([key, name]));
         }
     }
     files.retain(|_, data| data.is_some());
@@ -329,7 +326,7 @@ mod tests {
             &config.join("companion.toml"),
             b"mood = 'calm'\nvoice_pack = 'separate'\n",
         );
-        write_fixture(&dir.join("pack.json"), br#"{"format":1,"name":"Rabbit","sprites":{"default":{"frames":["rest.png"]},"state:idle":{"frames":["missing.png"]}},"voice":{"state:paused":"line.wav"}}"#);
+        write_fixture(&dir.join("pack.json"), br#"{"format":1,"name":"Rabbit","sprites":{"default":{"frames":["rest.png"]},"state:idle":{"frames":["missing.png"]},"mood:caf\u00e9":{"frames":["rest.png"]},"mood:cafe\u0301":{"frames":["rest.png"]}},"voice":{"state:paused":"line.wav"}}"#);
         write_fixture(
             &dir.join("rest.png"),
             include_bytes!("../companion/assets/states/sleeping_0_400x520.png"),
@@ -356,7 +353,13 @@ mod tests {
         assert_eq!(loaded["status"], 200);
         assert_eq!(loaded["body"]["mood"], "calm");
         assert!(loaded["body"]["frames"]["rest.png"].is_string());
-        assert!(loaded["body"]["clips"]["state:idle"].is_null());
+        let clips = loaded["body"]["clips"].as_array().unwrap();
+        assert_eq!(clips.len(), 3);
+        assert!(clips.iter().any(|entry| entry["key"] == "mood:café"));
+        assert!(clips
+            .iter()
+            .any(|entry| entry["key"] == "mood:cafe\u{0301}"));
+        assert!(clips.iter().all(|entry| entry["key"] != "state:idle"));
         assert!(serde_json::to_vec(&loaded).unwrap().len() < MAX_RESPONSE_BYTES);
         let prefs = settings(&config).unwrap();
         assert_eq!(value(&prefs, "appearance_pack"), Some("rabbit"));
@@ -370,7 +373,10 @@ mod tests {
         };
         let selected_voice = voice("rabbit");
         assert_eq!(selected_voice["body"]["audio"]["line.wav"], wave);
-        assert_eq!(selected_voice["body"]["cues"]["state:paused"], "line.wav");
+        assert_eq!(
+            selected_voice["body"]["cues"],
+            json!([["state:paused", "line.wav"]])
+        );
         assert_eq!(voice("")["status"], 200);
         assert_eq!(value(&settings(&config).unwrap(), "voice_pack"), None);
         assert_eq!(

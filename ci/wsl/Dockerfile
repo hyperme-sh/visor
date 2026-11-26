@@ -19,5 +19,9 @@ RUN install -d -o visorci -g visorci -m 0700 /home/visorci/.visor-wsl \
       --server-data-dir /home/visorci/.vscode-server \
       --extensions-dir /home/visorci/.vscode-server/extensions \
       --install-extension /opt/visor-wsl/hypermesh-vscode.vsix --force && \
-    rm -rf /tmp/visor-vscode-server /tmp/vscode-server.tar.gz && \
+    commit="$(python3 -c 'import json, re; value = json.load(open("/tmp/visor-vscode-server/product.json"))["commit"]; assert re.fullmatch("[a-f0-9]{40}", value); print(value)')" && \
+    install -d -o visorci -g visorci /home/visorci/.vscode-server/bin && \
+    mv /tmp/visor-vscode-server "/home/visorci/.vscode-server/bin/$commit" && \
+    chown -R visorci:visorci "/home/visorci/.vscode-server/bin/$commit" && \
+    rm /tmp/vscode-server.tar.gz && \
     chmod 0755 /opt/visor-wsl/hypermesh-visor /opt/visor-wsl/hypermesh-companion

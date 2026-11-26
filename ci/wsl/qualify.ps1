@@ -122,8 +122,11 @@ try {
     if ($RemoteSsh) {
         $settings['remote.SSH.configFile'] = $sshConfig
         $settings['remote.SSH.remotePlatform'] = @{ $remoteName = 'linux' }
+        $settings['remote.SSH.path'] = (Get-Command ssh.exe -CommandType Application).Source
         $settings['remote.SSH.showLoginTerminal'] = $false
         $settings['remote.SSH.useLocalServer'] = $false
+        $settings['remote.SSH.useExecServer'] = $false
+        $settings['remote.SSH.connectTimeout'] = 60
     }
     $settings | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $userData 'User/settings.json') -Encoding utf8
     $codeCli = Join-Path $codeDir 'bin/code.cmd'
@@ -160,6 +163,18 @@ try {
     } else {
         Invoke-WSL /usr/bin/python3 /opt/visor-wsl/task.py verify $taskId
     }
+} catch {
+    if ($RemoteSsh -and $userData) {
+        Get-ChildItem -LiteralPath (Join-Path $userData 'logs') -Filter '*SSH*.log' -File -Recurse -ErrorAction SilentlyContinue |
+            ForEach-Object {
+                Get-Content -LiteralPath $_.FullName -Tail 80 -ErrorAction SilentlyContinue |
+                    Where-Object {
+                        $_ -match 'running script|install|download|error|timeout|prerequisites|listening' -and
+                        $_ -notmatch 'token|secret|authorization|password|credential'
+                    } | Write-Host
+            }
+    }
+    throw
 } finally {
     if ($codeProcess -and !$codeProcess.HasExited) {
         $codeProcess.Kill($true)

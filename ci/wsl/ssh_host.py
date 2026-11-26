@@ -3,6 +3,7 @@ import base64
 import contextlib
 import hashlib
 import hmac
+from html import escape
 import http.server
 import json
 import os
@@ -77,14 +78,14 @@ class Authority:
                 or request.get("control_plane_id") != self.plane_id
                 or request.get("next_public_key") != ""
                 or abs(int(time.time()) - request.get("issued_at", 0)) > 60):
-            return False
+            return None
         nonce = request.get("nonce")
         if not isinstance(nonce, str) or len(nonce) != 64 or nonce in self.nonces:
-            return False
+            return None
         public = base64.b64decode(request["public_key"], validate=True)
         signature = base64.b64decode(request["signature"], validate=True)
         if len(public) != 32 or len(signature) != 64:
-            return False
+            return None
         message = "\n".join((
             "hypermesh-machine-identity-v1", self.tenant, self.device, self.device,
             self.authority_id, self.plane_id, request["public_key"],
@@ -98,7 +99,7 @@ class Authority:
             "-inkey", STATE / "proof.pub.der", "-sigfile", STATE / "proof.sig",
             "-in", STATE / "proof.message", stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         self.nonces.add(nonce)
-        return True
+        return base64.b64encode(public).decode("ascii")
 
     def config(self):
         return {"authority_id": self.authority_id, "control_plane_id": self.plane_id}
@@ -125,12 +126,13 @@ class Authority:
                     return 401, None
             elif self.public_key != request.get("public_key"):
                 return 401, None
-            if not self.verify_proof(request):
+            public_key = self.verify_proof(request)
+            if public_key is None:
                 return 403, None
-            self.public_key = request["public_key"]
+            self.public_key = public_key
             return 200, {
                 "access_token": self.token, "token_type": "Bearer", "expires_in": 600,
-                "public_key": self.public_key, "key_created_at": int(time.time()),
+                "public_key": escape(public_key), "key_created_at": int(time.time()),
             }
         if not self.public_key or not hmac.compare_digest(authorization, "Bearer " + self.token):
             return 401, None
@@ -145,7 +147,7 @@ class Authority:
             for key in ("device_id", "assignment_id", "session_id"):
                 if request.get(key) != fact[key]:
                     return 403, None
-            request_id = str(UUID(request["request_id"]))
+            request_id = escape(str(UUID(request["request_id"])))
             return 200, {**fact, "version": 1, "request_id": request_id,
                          "principal": "visor-ci-owner", "expires_at": time.time() + 8}
         return 404, None

@@ -47,11 +47,11 @@ RemoteDesktop portal currently has no option for it.
 An [isolated EI/EIS contract](../tests/wayland/eis-pause-contract.c) puts a
 pointer frame in the libeis queue before the simulated takeover. The
 server-side latch discards the queued motion and the sender receives the
-disconnect. With libeis 1.2.1 and 1.5.0, an active emulation sequence sent
-no pause event when the server called `eis_device_pause()`. The
-[1.6.0 implementation](https://gitlab.freedesktop.org/libinput/libei/-/blob/1.6.0/src/libeis-device.c#L1704-1728)
-accepts active emulation, but the library contract still allows events
-already in flight to reach the server.
+disconnect. When the server called `eis_device_pause()` during active
+emulation, libeis 1.2.1 and 1.5.0 sent no pause event. With
+[libeis 1.6.0](https://gitlab.freedesktop.org/libinput/libei/-/blob/1.6.0/src/libeis-device.c#L1704-1728)
+the sender received the pause event and the queued motion still reached
+the server's discard path.
 [libeis pause documentation](https://libinput.pages.freedesktop.org/libei/api/group__libeis-device.html)
 
 The contract runs with a C compiler, `pkg-config`, and the libei and libeis

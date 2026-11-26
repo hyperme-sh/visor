@@ -9,7 +9,7 @@ checks.
 
 Pick a reverse-domain ID such as `org.example.byte-count` and stable tool names.
 Build a static Linux ELF executable for the target architecture. Any language
-can implement the [stdio wire contract](schemas/stdio-v1.json). Rust authors can
+can implement the [stdio wire contract](../src/plugins/schemas/stdio-v1.json). Rust authors can
 use the [standalone SDK](sdk/) and copy the [byte-count example](reference/) to
 an independent project. Its Cargo workspace and lockfile are separate from
 Visor's. For the SDK example, copy `reference` and `sdk` as siblings, then run
@@ -21,7 +21,7 @@ RUSTFLAGS='-C target-feature=+crt-static' cargo build --release --locked --targe
 ```
 
 Create an owner-only directory with `manifest.json` and `plugin`, both
-owner-only files. Use the [manifest schema](schemas/manifest-v1.json), set
+owner-only files. Use the [manifest schema](../src/plugins/schemas/manifest-v1.json), set
 `executable_sha256` to the hex SHA-256 of `plugin`, then record the SHA-256 of
 the exact `manifest.json` bytes. A local owner explicitly supplies that manifest
 hash when enabling one tool. A new binary or manifest needs a new grant. A

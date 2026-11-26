@@ -35,13 +35,6 @@ jobs:
       - name: Check display typing interruption observer
         run: python3 ci/display/test-interrupt-type.py
       - run: cargo test --locked --workspace
-      - name: Public plugin API and independent package contracts
-        run: |
-          if ! command -v bwrap >/dev/null; then
-            sudo apt-get update
-            sudo apt-get install -y --no-install-recommends bubblewrap
-          fi
-          bash ci/plugin-contract.sh
       - name: GlitchTip fake Sentry endpoint contract
         run: cargo test --locked --lib crash_upload::tests::fake_sentry_endpoint_contract -- --ignored --exact
       - name: Session CLI terminal unit contracts

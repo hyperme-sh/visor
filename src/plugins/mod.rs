@@ -160,9 +160,8 @@ impl Package {
             return Err(Error::Package);
         }
         let value: Value = serde_json::from_slice(&raw).map_err(|_| Error::Package)?;
-        let shape: Value =
-            serde_json::from_str(include_str!("../../plugins/schemas/manifest-v1.json"))
-                .map_err(|_| Error::Package)?;
+        let shape: Value = serde_json::from_str(include_str!("schemas/manifest-v1.json"))
+            .map_err(|_| Error::Package)?;
         let shape = schema::compile(&shape).map_err(|_| Error::Package)?;
         schema::validate_compiled(&shape, &value).map_err(|_| Error::Package)?;
         // Deserializing the original bytes also refuses duplicate manifest fields.
@@ -386,8 +385,7 @@ mod tests {
 
     #[test]
     fn public_wire_schema_distinguishes_protocol_versions_and_failure_envelopes() {
-        let shape =
-            serde_json::from_str(include_str!("../../plugins/schemas/stdio-v1.json")).unwrap();
+        let shape = serde_json::from_str(include_str!("schemas/stdio-v1.json")).unwrap();
         let validator = schema::compile(&shape).unwrap();
         let mut call = json!({"jsonrpc":"2.0", "id":2, "method":"tools/call",
                               "params":{"name":"test","input":{}}});
@@ -415,13 +413,13 @@ mod tests {
         let dir = Temp(std::env::temp_dir().join(format!("visor-plugin-{}", Uuid::new_v4())));
         storage::create_dir(&dir.0).unwrap();
         let file = dir.0.join("manifest.json");
-        let mut shape: Value = serde_json::from_str(include_str!(
-            "../../plugins/reference/manifest.template.json"
-        ))
-        .unwrap();
-        shape["executable_sha256"] = json!("0".repeat(64));
-        shape["tools"][0]["scope"] = json!("workspace.write");
-        let raw = shape.to_string();
+        let raw = json!({
+            "manifest_version":1, "id":"org.example.byte-count", "package_version":"1.0.0",
+            "api_versions":[1], "profile":"local-stdio", "executable_sha256":"0".repeat(64),
+            "tools":[{"name":"count-bytes","scope":"workspace.write",
+                      "input_schema":{"type":"object"},"output_schema":{"type":"object"}}]
+        })
+        .to_string();
         use std::io::Write;
         storage::open(&file, storage::Open::New)
             .unwrap()

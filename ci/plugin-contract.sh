@@ -45,8 +45,18 @@ for package in packages.iterdir():
     (package / "manifest.json").write_text(json.dumps(manifest) + "\n")
 PY
 
+# Fail with the runner's namespace error before invoking the production guard,
+# which deliberately discards subprocess stderr.
+install -m 500 "$scratch/packages/current/plugin" "$scratch/probe"
+env -i /usr/bin/bwrap --unshare-all --disable-userns --die-with-parent --new-session \
+    --clearenv --cap-drop ALL --ro-bind "$scratch/probe" /plugin --remount-ro / \
+    --chdir / -- /plugin <<'JSON'
+{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"plugin_id":"org.example.byte-count","api_versions":[1,0]}}
+{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"count-bytes","input":{"content_base64":"YWJj"},"timeout_ms":4000}}
+JSON
+
 cd "$repo"
-cargo build --locked --bin hypermesh-plugin-conformance
+cargo build --locked --no-default-features --features headless --bin hypermesh-plugin-conformance
 python3 - "$scratch" "$repo/target/debug/hypermesh-plugin-conformance" <<'PY'
 import hashlib
 import json
@@ -75,5 +85,5 @@ for mode, expected in {
     assert not list((scratch / "staging").iterdir()), mode
     print(f"{mode}: passed")
 PY
-VISOR_PLUGIN_CONTRACT_DIR="$scratch/packages" cargo test --locked --lib \
+VISOR_PLUGIN_CONTRACT_DIR="$scratch/packages" cargo test --locked --no-default-features --features headless --lib \
     api::tests::plugin_contract::independent_package_uses_owner_admission -- --ignored --exact

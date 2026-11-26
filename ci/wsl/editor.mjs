@@ -129,7 +129,9 @@ const terminalBuffers = `[...document.querySelectorAll('.xterm')]
 
 function waitForTask(expected, previous) {
   return until('the completed scoped task in the VS Code terminal', async () => {
-    for (const text of await evaluate(terminalBuffers)) {
+    for (const rows of await evaluate(terminalBuffers)) {
+      // The terminal can wrap the UUID and exit status across visible rows.
+      const text = rows.replaceAll('\n', '');
       if (!text.includes(marker) || !text.includes('completed · access ready · exit 0')) continue;
       const id = text.match(/Visor task ([a-f0-9-]{36})/)?.[1];
       if (id && id !== previous && (!expected || id === expected)) return id;

@@ -20,7 +20,7 @@ jobs:
         run: python3 -m unittest discover -s ci/container -p 'test_*.py'
       - name: Check shell harness syntax
         run: |
-          for script in ci/verbs.sh ci/cross-user.sh ci/display/run.sh; do
+          for script in ci/verbs.sh ci/cross-user.sh ci/display/run.sh ci/container/live-github-issue-contract.sh; do
             bash -n "$script"
           done
       - name: Validate Compose contract without starting containers
@@ -36,7 +36,8 @@ jobs:
           assert not services["reader"].get("environment")
           relay = services["writer"]["environment"]["VISOR_GITHUB_ISSUE_EGRESS_SOCKET"]
           mount, = (volume for volume in services["writer"]["volumes"] if volume["target"] == relay)
-          assert mount["type"] == "bind" and mount["read_only"] and not mount["bind"]["create_host_path"]
+          assert mount["type"] == "bind" and mount["read_only"]
+          assert not mount.get("bind", {}).get("create_host_path", False)
           assert not any(volume["target"] == relay for volume in services["reader"]["volumes"])
           '
           touch "$RUNNER_TEMP/bot-config" "$RUNNER_TEMP/bot-token"

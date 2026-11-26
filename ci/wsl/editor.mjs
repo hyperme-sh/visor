@@ -127,7 +127,7 @@ async function waitForTask(expected) {
 
 try {
   await connect();
-  await until('the WSL workspace title', () => evaluate(`document.title.includes(${JSON.stringify(distro)})`), 120_000);
+  await until('the WSL workspace title', () => evaluate(`document.title.toLowerCase().includes(${JSON.stringify(distro.toLowerCase())})`), 120_000);
   await until('the Workspace Trust prompt', () =>
     click('.monaco-dialog-box .monaco-button, .monaco-dialog-box button', 'Yes, I trust the authors'), 60_000);
   const begin = async () => {

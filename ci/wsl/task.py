@@ -72,7 +72,8 @@ def client():
     assert os.getuid() == USER.pw_uid
     assert os.environ["WSL_DISTRO_NAME"].startswith("VisorCI-")
     assert "microsoft" in os.uname().release.lower(), os.uname().release
-    with (BASE / "config/terminal-task.json").open("x", opener=lambda path, flags: os.open(path, flags, 0o600)) as config:
+    with open(BASE / "config/terminal-task.json", "x",
+              opener=lambda path, flags: os.open(path, flags, 0o600)) as config:
         json.dump({
             "workspace": str(WORKSPACE), "cwd": str(WORKSPACE), "command": "/bin/sh",
             "args": ["-c", f"printf x >> runs; printf '%s\\n' {MARKER}"],
@@ -119,7 +120,8 @@ def client():
             # Keep the real daemon available for the VS Code window. The Windows
             # job unregisters this distro after the editor and CLI checks.
             while daemon.poll() is None:
-                time.sleep(0.2)
+                request("/companion", 200)
+                time.sleep(0.75)
             raise RuntimeError(f"Visor stopped before the fixture finished ({daemon.returncode})")
         finally:
             if daemon.poll() is None:

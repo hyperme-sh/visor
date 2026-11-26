@@ -33,7 +33,7 @@ PY
 )
 profile="$base/editor-profile"
 extensions="$base/editor-extensions"
-install -d -o visorci -g visorci "$profile/User" "$extensions"
+install -d -o visorci -g visorci "$profile" "$profile/User" "$extensions"
 cat >"$profile/User/settings.json" <<'JSON'
 {
   "hypermesh.companionExecutable": "/opt/visor-wsl/hypermesh-companion",

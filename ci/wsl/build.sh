@@ -4,11 +4,9 @@ editor=$1
 output=$2
 stage=$(mktemp -d)
 container=
-local_image=
 image="visor-wsl-fixture:${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
 cleanup() {
     if [ -n "$container" ]; then docker rm "$container"; fi
-    if [ -n "$local_image" ]; then docker image rm "$local_image" >/dev/null 2>&1 || true; fi
     docker image rm "$image" >/dev/null 2>&1 || true
     rm -rf -- "$stage"
 }
@@ -41,4 +39,3 @@ curl --proto '=https' --proto-redir '=https' --fail --silent --show-error --loca
     "https://update.code.visualstudio.com/$version/linux-x64/stable" --output "$stage/code-linux.tar.gz"
 install -m 0755 "$(command -v node)" "$stage/node"
 docker build --target local-preview -t "$local_image" "$stage"
-docker run --rm --init --network none "$local_image" bash /opt/visor-wsl/local_preview.sh

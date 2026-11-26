@@ -36,6 +36,7 @@ use x11rb::rust_connection::RustConnection;
 
 use crate::automation::{self, CursorPose};
 use crate::draw;
+use crate::presentation::Pack;
 
 const CURSOR_SIZE: u32 = 32;
 
@@ -57,6 +58,20 @@ impl Art {
             })
             .collect();
         Self { frames }
+    }
+
+    pub fn with_pack(mut self, pack: &Pack) -> Self {
+        let replacement = |name: &str| {
+            let asset = pack.manifest.cursor.get(name)?.as_ref()?.as_str()?;
+            let bytes = pack.asset(asset, ".png", 32 * 1024).ok()?;
+            draw::decode_pack_rgba(&bytes, (CURSOR_SIZE, CURSOR_SIZE))
+        };
+        for (name, image) in &mut self.frames {
+            if let Some(custom) = replacement(name).or_else(|| replacement("pointer")) {
+                *image = custom;
+            }
+        }
+        self
     }
 
     pub fn frame(&self, name: &str) -> &draw::Rgba {

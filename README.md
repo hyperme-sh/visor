@@ -99,7 +99,7 @@ The raw release assets `hypermesh-visor-x86_64` and `hypermesh-visor-aarch64` st
 
 ## Desktop companion
 
-`hypermesh-companion` is a Linux-only bug on the desktop. It plays the animated states in [`companion/assets/states`](companion/assets/states/README.md). Frame order, `ms_per_frame`, and `loop` come from `states.json`. The window uses the `400x520` frames.
+The Linux `hypermesh-companion` shows the bundled bug by default. You can install, edit, and share [companion packs](docs/companion-packs.md) for custom artwork, cursor sprites, and prerecorded voices. The bundled animation uses the `400x520` frames and timing in [`companion/assets/states`](companion/assets/states/README.md).
 
 | State | When it shows |
 | --- | --- |

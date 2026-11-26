@@ -25,8 +25,10 @@ mod mcp_servers;
 mod mcp_status;
 mod mcp_trust;
 mod mcp_trust_gui;
+mod pack_picker;
 mod pages;
 mod pointer;
+mod presentation;
 mod prompt;
 mod session_cli;
 mod session_selection;
@@ -35,6 +37,7 @@ mod settings;
 #[path = "../../src/telemetry.rs"]
 mod telemetry;
 mod visor;
+mod voice;
 mod window;
 
 use std::path::PathBuf;

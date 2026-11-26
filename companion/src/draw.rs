@@ -5,9 +5,11 @@ use std::collections::HashMap;
 use std::fs::File;
 use std::io::BufWriter;
 use std::path::Path;
+use std::sync::Arc;
 
 use crate::auth::Pose;
 use crate::mascot::{self, Mascot};
+use crate::presentation::{self, ClipSpec, Pack, Signals};
 
 const TARGET_WIDTH: u32 = 400;
 /// `place` keeps 48 px under the window. This leaves that, plus a small gap,
@@ -21,6 +23,7 @@ pub enum Action {
     Feedback,
     ToggleMenu,
     ToggleCompact,
+    CompanionPacks,
     OpenCli,
     OpenSessionCli,
     OpenSessionForum,
@@ -97,6 +100,15 @@ pub struct Sprites {
     frames: HashMap<(Mascot, usize), Image>,
     idle_eyes: Vec<Vec<Rect>>,
     catalog: mascot::Catalog,
+    custom: Vec<(String, CustomClip)>,
+    active: Option<usize>,
+    label: &'static str,
+}
+
+struct CustomClip {
+    ms_per_frame: u64,
+    looped: bool,
+    frames: Vec<Arc<Image>>,
 }
 
 impl Sprites {
@@ -119,10 +131,52 @@ impl Sprites {
             frames,
             idle_eyes,
             catalog,
+            custom: Vec::new(),
+            active: None,
+            label: "",
         }
     }
 
-    pub fn frame(&self, state: Mascot, index: usize) -> &Image {
+    pub fn with_pack(mut self, pack: &Pack) -> Self {
+        let mut frames = HashMap::new();
+        self.custom = pack
+            .manifest
+            .sprites
+            .iter()
+            .filter_map(|(key, entry)| {
+                let entry = entry.as_ref()?;
+                if !presentation::valid_key(key) {
+                    return None;
+                }
+                match custom_clip(pack, entry, &mut frames) {
+                    Ok(Some(clip)) => Some((key.clone(), clip)),
+                    Ok(None) => None,
+                    Err(error) => {
+                        eprintln!("hypermesh-companion: unusable sprite binding {key}: {error}");
+                        None
+                    }
+                }
+            })
+            .collect();
+        self
+    }
+
+    pub fn select(&mut self, signals: &Signals<'_>) -> bool {
+        let next = signals.select(&self.custom);
+        let changed = self.active != next;
+        self.active = next;
+        self.label = signals.label;
+        changed
+    }
+
+    fn custom_clip(&self) -> Option<&CustomClip> {
+        self.active.map(|index| &self.custom[index].1)
+    }
+
+    fn frame(&self, state: Mascot, index: usize) -> &Image {
+        if let Some(clip) = self.custom_clip() {
+            return &clip.frames[index % clip.frames.len()];
+        }
         let count = self.catalog.clip(state).files.len();
         let index = if count == 0 { 0 } else { index % count };
         self.frames
@@ -131,9 +185,49 @@ impl Sprites {
     }
 
     pub fn timing(&self, state: Mascot) -> (u64, usize, bool) {
+        if let Some(clip) = self.custom_clip() {
+            return (clip.ms_per_frame, clip.frames.len(), clip.looped);
+        }
         let clip = self.catalog.clip(state);
         (clip.ms_per_frame, clip.files.len(), clip.looped)
     }
+}
+
+fn custom_clip(
+    pack: &Pack,
+    entry: &serde_json::Value,
+    cache: &mut HashMap<String, Option<Arc<Image>>>,
+) -> Result<Option<CustomClip>, String> {
+    const MAX_UNIQUE_FRAMES: usize = 64;
+    const MAX_FRAME_BYTES: usize = 1024 * 1024;
+    let spec: ClipSpec =
+        serde_json::from_value(entry.clone()).map_err(|error| error.to_string())?;
+    if spec.frames.is_empty() {
+        return Ok(None);
+    }
+    let ms_per_frame = spec.ms_per_frame.unwrap_or(150);
+    if spec.frames.len() > 16 || !(40..=10_000).contains(&ms_per_frame) {
+        return Err("expected at most 16 frames and 40 to 10000 ms per frame".into());
+    }
+    let mut frames = Vec::with_capacity(spec.frames.len());
+    for name in spec.frames {
+        if !cache.contains_key(&name) && cache.len() >= MAX_UNIQUE_FRAMES {
+            return Err("pack exceeds the 64 distinct frame limit".into());
+        }
+        let image = cache.entry(name.clone()).or_insert_with(|| {
+            let bytes = pack.asset(&name, ".png", MAX_FRAME_BYTES).ok()?;
+            read_png(&bytes, Some((400, 520))).ok().map(Arc::new)
+        });
+        let Some(image) = image else {
+            return Err("expected a readable 400×520 PNG with visible pixels".into());
+        };
+        frames.push(Arc::clone(image));
+    }
+    Ok(Some(CustomClip {
+        ms_per_frame,
+        looped: spec.looped,
+        frames,
+    }))
 }
 
 pub fn render(
@@ -156,7 +250,7 @@ pub fn render(
     let bug_top = 0i32;
     // The illustrated frames already blink and bob. Pupils still track when
     // the idle frame has the two eye shapes and a session is open.
-    if eyes_follow && mascot == Mascot::Idle {
+    if eyes_follow && mascot == Mascot::Idle && sprites.active.is_none() {
         if let (Pose::Active { .. }, Some((px, py))) = (pose, pointer) {
             let eyes = sprites
                 .idle_eyes
@@ -169,6 +263,21 @@ pub fn render(
     let width = bug.w.max(TARGET_WIDTH);
     let mut blocks: Vec<Block> = Vec::new();
     let mut y = bug.h as i32;
+    if sprites.active.is_some() {
+        let card = text_card(
+            width,
+            2,
+            &[sprites.label.to_owned()],
+            [12, 18, 28, 255],
+            [230, 240, 245, 255],
+        );
+        y += card.h as i32 + 4;
+        blocks.push(Block {
+            y: bug.h as i32,
+            image: card,
+            hits: Vec::new(),
+        });
+    }
     if let Pose::Active {
         purpose,
         verb,
@@ -262,6 +371,7 @@ pub fn render(
         };
         let rows = [
             ("Compact / expanded icon", Action::ToggleCompact),
+            ("Companion packs", Action::CompanionPacks),
             ("Session CLI", Action::OpenSessionCli),
             ("Session forum", Action::OpenSessionForum),
             ("Session in VS Code", Action::OpenSessionEditor),
@@ -397,6 +507,22 @@ pub fn render_compact(
             &format!("O{}", compact_tokens(usage.output_tokens)),
             [180, 245, 160, 255],
         );
+    }
+    if sprites.active.is_some() {
+        let label = if sprites.label == "Automation running" {
+            "Running"
+        } else {
+            sprites.label
+        };
+        let card = text_card(
+            bug.w,
+            1,
+            &[label.to_owned()],
+            [12, 18, 28, 255],
+            [230, 240, 245, 255],
+        );
+        let y = bug.h.saturating_sub(card.h) as i32;
+        blit(&mut bug.rgba, bug.w, &card, 0, y, 0);
     }
     let details = hover.then(|| {
         let mut lines = vec!["Companion".to_owned()];
@@ -573,11 +699,20 @@ pub fn dump_frames(dir: &Path) -> std::io::Result<()> {
 }
 
 pub fn decode_rgba(bytes: &[u8]) -> Rgba {
-    let image = decode_png(bytes);
-    Rgba {
-        width: image.w,
-        height: image.h,
-        rgba: image.rgba,
+    decode_png(bytes).into()
+}
+
+pub fn decode_pack_rgba(bytes: &[u8], size: (u32, u32)) -> Option<Rgba> {
+    read_png(bytes, Some(size)).ok().map(Rgba::from)
+}
+
+impl From<Image> for Rgba {
+    fn from(image: Image) -> Self {
+        Self {
+            width: image.w,
+            height: image.h,
+            rgba: image.rgba,
+        }
     }
 }
 
@@ -1135,10 +1270,38 @@ fn scale_width(src: &Image, target_w: u32) -> Image {
 }
 
 fn decode_png(bytes: &[u8]) -> Image {
-    let decoder = png::Decoder::new(std::io::Cursor::new(bytes));
-    let mut reader = decoder.read_info().expect("png");
+    read_png(bytes, None).expect("embedded PNG")
+}
+
+fn read_png(bytes: &[u8], custom_size: Option<(u32, u32)>) -> Result<Image, String> {
+    let input = std::io::Cursor::new(bytes);
+    let mut decoder = if custom_size.is_some() {
+        png::Decoder::new_with_limits(
+            input,
+            png::Limits {
+                bytes: 2 * 1024 * 1024,
+            },
+        )
+    } else {
+        png::Decoder::new(input)
+    };
+    decoder.set_ignore_text_chunk(true);
+    decoder.set_ignore_iccp_chunk(true);
+    decoder.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
+    let header = decoder
+        .read_header_info()
+        .map_err(|error| error.to_string())?;
+    if custom_size.is_some_and(|size| size != (header.width, header.height)) {
+        return Err("unexpected frame dimensions".into());
+    }
+    let mut reader = decoder.read_info().map_err(|error| error.to_string())?;
+    if custom_size.is_some() && reader.info().animation_control.is_some() {
+        return Err("use individual PNG frames".into());
+    }
     let mut buf = vec![0; reader.output_buffer_size()];
-    let info = reader.next_frame(&mut buf).expect("png frame");
+    let info = reader
+        .next_frame(&mut buf)
+        .map_err(|error| error.to_string())?;
     buf.truncate(info.buffer_size());
     let rgba = match info.color_type {
         png::ColorType::Rgba => buf,
@@ -1149,13 +1312,21 @@ fn decode_png(bytes: &[u8]) -> Image {
             }
             out
         }
-        other => panic!("sprite color type {other:?}"),
+        png::ColorType::Grayscale => buf.iter().flat_map(|&v| [v, v, v, 255]).collect(),
+        png::ColorType::GrayscaleAlpha => buf
+            .chunks_exact(2)
+            .flat_map(|px| [px[0], px[0], px[0], px[1]])
+            .collect(),
+        png::ColorType::Indexed => return Err("unexpanded indexed color".into()),
     };
-    Image {
+    if custom_size.is_some() && !rgba.chunks_exact(4).any(|px| px[3] != 0) {
+        return Err("fully transparent frame".into());
+    }
+    Ok(Image {
         w: info.width,
         h: info.height,
         rgba,
-    }
+    })
 }
 
 fn write_png(path: &Path, scene: &Scene) -> std::io::Result<()> {
@@ -1171,6 +1342,63 @@ fn write_png(path: &Path, scene: &Scene) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sparse_pack_renders_usable_clips_and_keeps_native_controls() {
+        let config = std::env::temp_dir().join(format!("visor-pack-{}", uuid::Uuid::new_v4()));
+        let dir = config.join("companion-packs/rabbit");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("pack.json"),
+            r#"{
+            "format": 1,
+            "name": "Rabbit",
+            "sprites": {
+                "default": {"frames": ["rest.png"]},
+                "state:idle": {"frames": []},
+                "state:upgrading": null,
+                "mode:mcp:editor": {"frames": ["outside.png"]},
+                "verb:type": {"frames": ["typing.png"], "ms_per_frame": 100}
+            }
+        }"#,
+        )
+        .unwrap();
+        let rest = mascot::state_png("sleeping_0_400x520.png").unwrap();
+        std::fs::write(dir.join("rest.png"), rest).unwrap();
+        std::fs::write(
+            dir.join("typing.png"),
+            mascot::state_png("automation_0_400x520.png").unwrap(),
+        )
+        .unwrap();
+        std::os::unix::fs::symlink(dir.join("rest.png"), dir.join("outside.png")).unwrap();
+        let pack = Pack::load(&config, "rabbit").unwrap();
+        assert!(Pack::load(&config, "../rabbit").is_err());
+        assert!(pack
+            .asset("../rabbit/rest.png", ".png", 1024 * 1024)
+            .is_err());
+        assert!(pack.asset("outside.png", ".png", 1024 * 1024).is_err());
+        let mut sprites = Sprites::load().with_pack(&pack);
+        std::fs::remove_dir_all(config).unwrap();
+
+        let pose = Pose::Active {
+            purpose: "example".into(),
+            verb: Some("type".into()),
+            mode: Some("mcp:editor".into()),
+        };
+        assert!(sprites.select(&Signals::new(Mascot::Automation, false, &pose, None, None)));
+        assert_eq!(sprites.timing(Mascot::Automation), (100, 1, false));
+        assert!(sprites.select(&Signals::new(Mascot::Idle, true, &pose, None, None)));
+        assert_eq!(sprites.timing(Mascot::Idle), (150, 1, false));
+        assert_eq!(sprites.frame(Mascot::Idle, 0).rgba, decode_png(rest).rgba);
+        assert_eq!(sprites.label, "Paused");
+        let result = scene(&sprites, &pose, Mascot::Idle, 0, false, None);
+        assert!(result
+            .hits
+            .iter()
+            .any(|hit| hit.action == Action::ToggleMenu));
+        let built_in = Sprites::load();
+        assert_eq!(built_in.timing(Mascot::Idle), (150, 8, true));
+    }
 
     fn scene(
         sprites: &Sprites,

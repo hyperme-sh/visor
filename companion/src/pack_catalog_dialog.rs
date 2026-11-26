@@ -4,7 +4,7 @@ use std::io::Write;
 use std::path::Path;
 use std::process::{Command, Stdio};
 
-use hypermesh_visor::companion_catalog::{self as catalog, Catalog, Preview};
+use hypermesh_visor::companion_catalog::{self as catalog, Catalog, CatalogSource, Preview};
 use hypermesh_visor::companion_packs::{installed, Medium};
 
 use crate::mcp_dialog::{args, choose};
@@ -13,7 +13,28 @@ pub fn browse(
     config: &Path,
     ui: &mut impl FnMut(&[String], Option<&str>) -> Result<Option<String>, String>,
 ) -> Result<(), String> {
-    let catalog = progress("Loading community packs…", || Catalog::fetch(config))?;
+    browse_from(
+        config,
+        ui,
+        &CatalogSource::GITHUB,
+        true,
+        |medium, bytes| match medium {
+            Preview::Art => artwork(config, bytes),
+            Preview::Voice => voice(bytes),
+        },
+    )
+}
+
+pub(crate) fn browse_from(
+    config: &Path,
+    ui: &mut impl FnMut(&[String], Option<&str>) -> Result<Option<String>, String>,
+    source: &CatalogSource<'_>,
+    show_progress: bool,
+    mut present: impl FnMut(Preview, &[u8]) -> Result<(), String>,
+) -> Result<(), String> {
+    let catalog = progress(show_progress, "Loading community packs…", || {
+        Catalog::fetch_from(config, source)
+    })?;
     let rows: Vec<_> = catalog
         .packs
         .iter()
@@ -70,13 +91,10 @@ pub fn browse(
     while let Some(choice) = choose(ui, &display(&entry.name), &rows[index], &actions)? {
         match operations[choice] {
             Some(medium) => {
-                let bytes = progress("Downloading preview…", || {
-                    entry.preview(&catalog.asset_revision, medium)
+                let bytes = progress(show_progress, "Downloading preview…", || {
+                    entry.preview_from(&catalog.asset_revision, medium, source)
                 })?;
-                match medium {
-                    Preview::Art => artwork(config, &bytes)?,
-                    Preview::Voice => voice(&bytes)?,
-                }
+                present(medium, &bytes)?;
             }
             None => {
                 if entry.installed
@@ -92,8 +110,8 @@ pub fn browse(
                 {
                     continue;
                 }
-                progress("Downloading and verifying pack…", || {
-                    entry.install(config, &catalog.asset_revision, entry.installed)
+                progress(show_progress, "Downloading and verifying pack…", || {
+                    entry.install_from(config, &catalog.asset_revision, entry.installed, source)
                 })?;
                 ui(
                     &args(
@@ -158,7 +176,14 @@ fn display(value: &str) -> String {
     value.chars().filter(|c| !c.is_control() && !matches!(c, '\u{200e}'..='\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}')).collect()
 }
 
-fn progress<T>(message: &str, operation: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
+fn progress<T>(
+    enabled: bool,
+    message: &str,
+    operation: impl FnOnce() -> Result<T, String>,
+) -> Result<T, String> {
+    if !enabled {
+        return operation();
+    }
     let mut child = Command::new("zenity")
         .args([
             "--progress",

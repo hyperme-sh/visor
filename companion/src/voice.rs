@@ -63,8 +63,17 @@ impl Voice {
         voice
     }
 
+    fn select(&self, signals: &Signals<'_>) -> Option<usize> {
+        signals.select(&self.bindings)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn cue_for(&self, signals: &Signals<'_>) -> Option<&Cue> {
+        self.select(signals).map(|index| self.bindings[index].1.as_ref())
+    }
+
     pub fn update(&mut self, signals: &Signals<'_>) {
-        let next = signals.select(&self.bindings);
+        let next = self.select(signals);
         let cue = |index: usize| &self.bindings[index].1;
         let unchanged = match (self.selected, next) {
             (Some(previous), Some(next)) => Arc::ptr_eq(cue(previous), cue(next)),

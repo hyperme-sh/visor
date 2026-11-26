@@ -35,6 +35,17 @@ jobs:
       - name: Check display typing interruption observer
         run: python3 ci/display/test-interrupt-type.py
       - run: cargo test --locked --workspace
+      - name: Check out the published community pack fixture
+        uses: actions/checkout@v7.0.1
+        with:
+          repository: hyperme-sh/companion-packs
+          ref: 8940a44fb026224b563b0a732fbc69920f54dc4b
+          path: .ci-fixtures/companion-catalog
+          persist-credentials: false
+      - name: Linux catalog browse, preview, install, and offline pairing contract
+        env:
+          HYPERMESH_CATALOG_FIXTURE: ${{ github.workspace }}/.ci-fixtures/companion-catalog
+        run: cargo test --locked -p hypermesh-companion --bin hypermesh-companion pack_picker::published_contract::published_packs_linux_contract -- --ignored --exact
       - name: GlitchTip fake Sentry endpoint contract
         run: cargo test --locked --lib crash_upload::tests::fake_sentry_endpoint_contract -- --ignored --exact
       - name: Session CLI terminal unit contracts

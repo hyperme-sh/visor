@@ -134,6 +134,10 @@ fn pick(
 }
 
 #[cfg(test)]
+#[path = "pack_catalog_contract.rs"]
+mod published_contract;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use std::fs;

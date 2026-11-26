@@ -80,12 +80,14 @@ RUN set -eu; \
     awk '$2 ~ /[.]deb$/ || $2 == "build.txt"' checksums.txt > cloud-checksums.txt; \
     test "$(wc -l < cloud-checksums.txt)" -eq 2; \
     sha256sum -c cloud-checksums.txt; \
-    dpkg -i ./*.deb; \
+    dpkg --path-include=/usr/share/doc/hypermesh-visor-headless \
+      --path-include='/usr/share/doc/hypermesh-visor-headless/*' -i ./*.deb; \
     install -d /usr/share/visor-worker; \
     install -m 0644 build.txt cloud-checksums.txt /usr/share/visor-worker/; \
     groupadd --gid 1000 visor; \
     useradd --uid 1000 --gid visor --home-dir /var/lib/visor --no-create-home --shell /usr/sbin/nologin visor; \
     install -d -o visor -g visor -m 0700 /run/visor /var/lib/visor; \
+    cd /; \
     rm -rf /var/lib/apt/lists/* /tmp/visor-package; \
     sh /usr/local/libexec/visor-package-inventory
 ENV HOME=/var/lib/visor HYPERMESH_RUNTIME_DIR=/run/visor HYPERMESH_SESSION_SECRET_FILE=/var/lib/visor/session.json XDG_CONFIG_HOME=/var/lib/visor

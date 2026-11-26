@@ -1,0 +1,117 @@
+{
+  "schema_version": 1,
+  "reviewed_on": "2026-11-25",
+  "tools": [
+    {
+      "id": "gitea", "name": "Gitea", "group": "code_and_work_tracking",
+      "purpose": "Self-hosted Git repositories, reviews, and issues",
+      "upstream": "https://github.com/go-gitea/gitea",
+      "release": "v28.4.0", "release_url": "https://github.com/go-gitea/gitea/releases/tag/v28.4.0",
+      "software_license": "MIT", "license_url": "https://github.com/go-gitea/gitea/blob/main/LICENSE",
+      "hosting": "self_hosted_service", "install_url": "https://docs.gitea.com/installation/install-from-binary",
+      "platforms": [{"os":"linux","architectures":["x86_64","aarch64"]}],
+      "availability": "listed", "redistribution": "permissive_source"
+    },
+    {
+      "id": "forgejo", "name": "Forgejo", "group": "code_and_work_tracking",
+      "purpose": "Self-hosted Git forge and issue tracking",
+      "upstream": "https://forgejo.org/",
+      "release": "v17.0.2", "release_url": "https://forgejo.org/releases/",
+      "software_license": "GPL-3.0-or-later", "license_url": "https://forgejo.org/faq/",
+      "hosting": "self_hosted_service", "install_url": "https://forgejo.org/docs/latest/admin/installation/binary/",
+      "platforms": [{"os":"linux","architectures":["x86_64","aarch64"]}],
+      "availability": "listed", "redistribution": "separate_install"
+    },
+    {
+      "id": "vikunja", "name": "Vikunja", "group": "code_and_work_tracking",
+      "purpose": "Self-hosted tasks, lists, and Kanban",
+      "upstream": "https://vikunja.io/",
+      "release": "v2.8.0", "release_url": "https://github.com/go-vikunja/vikunja/releases/tag/v2.8.0",
+      "software_license": "AGPL-3.0", "license_url": "https://github.com/go-vikunja/vikunja",
+      "hosting": "self_hosted_service", "install_url": "https://vikunja.io/docs/installing/",
+      "platforms": [{"os":"linux","architectures":["x86_64","aarch64"]}],
+      "availability": "listed", "redistribution": "separate_install"
+    },
+    {
+      "id": "zulip", "name": "Zulip", "group": "team_chat",
+      "purpose": "Self-hosted team chat organized by topics",
+      "upstream": "https://zulip.com/",
+      "release": "13.3", "release_url": "https://github.com/zulip/zulip/releases/tag/13.3",
+      "software_license": "Apache-2.0", "license_url": "https://github.com/zulip/zulip/blob/main/LICENSE",
+      "hosting": "self_hosted_service", "install_url": "https://zulip.readthedocs.io/en/stable/production/install.html",
+      "platforms": [{"os":"linux","architectures":["x86_64"]}],
+      "availability": "listed", "redistribution": "permissive_source"
+    },
+    {
+      "id": "nextcloud", "name": "Nextcloud Server", "group": "files_and_office",
+      "purpose": "Self-hosted file sync and collaboration",
+      "upstream": "https://github.com/nextcloud/server",
+      "release": "v35.0.3", "release_url": "https://github.com/nextcloud/server/releases/tag/v35.0.3",
+      "software_license": "AGPL-3.0", "license_url": "https://github.com/nextcloud/server/blob/master/COPYING",
+      "hosting": "self_hosted_service", "install_url": "https://docs.nextcloud.com/server/latest/admin_manual/installation/",
+      "platforms": [{"os":"linux","architectures":["x86_64","aarch64"]}],
+      "availability": "listed", "redistribution": "separate_install"
+    },
+    {
+      "id": "libreoffice", "name": "LibreOffice", "group": "files_and_office",
+      "purpose": "Local documents, spreadsheets, and presentations",
+      "upstream": "https://www.libreoffice.org/",
+      "release": "26.8.3", "release_url": "https://www.libreoffice.org/download/",
+      "software_license": "MPL-2.0", "license_url": "https://www.libreoffice.org/licenses/",
+      "hosting": "local_application", "install_url": "https://www.libreoffice.org/download/",
+      "platforms": [{"os":"linux","architectures":["x86_64"]},{"os":"macos","architectures":["x86_64","aarch64"]},{"os":"windows","architectures":["x86_64","aarch64"]}],
+      "availability": "listed", "redistribution": "separate_install"
+    },
+    {
+      "id": "ollama", "name": "Ollama", "group": "local_ai",
+      "purpose": "Local model runner and HTTP service",
+      "upstream": "https://github.com/ollama/ollama",
+      "release": "v0.40.18", "release_url": "https://github.com/ollama/ollama/releases/tag/v0.40.18",
+      "software_license": "MIT", "license_url": "https://github.com/ollama/ollama/blob/main/LICENSE",
+      "hosting": "local_application", "install_url": "https://docs.ollama.com/linux",
+      "platforms": [{"os":"linux","architectures":["x86_64","aarch64"]}],
+      "availability": "listed", "redistribution": "permissive_source", "model_weights": "separate_license"
+    },
+    {
+      "id": "llama-cpp", "name": "llama.cpp", "group": "local_ai",
+      "purpose": "Local inference for GGUF models",
+      "upstream": "https://github.com/ggml-org/llama.cpp",
+      "release": "v1.0.0", "release_url": "https://github.com/ggml-org/llama.cpp/releases/tag/v1.0.0",
+      "software_license": "MIT", "license_url": "https://github.com/ggml-org/llama.cpp/blob/master/LICENSE",
+      "hosting": "local_application", "install_url": "https://github.com/ggml-org/llama.cpp/releases",
+      "platforms": [{"os":"linux","architectures":["x86_64","aarch64"]}],
+      "availability": "listed", "redistribution": "permissive_source", "model_weights": "separate_license"
+    },
+    {
+      "id": "aider", "name": "Aider", "group": "local_ai",
+      "purpose": "Terminal coding assistant with configurable model providers",
+      "upstream": "https://aider.chat/",
+      "release": "v0.86.0", "release_url": "https://github.com/Aider-AI/aider/releases/tag/v0.86.0",
+      "software_license": "Apache-2.0", "license_url": "https://github.com/Aider-AI/aider",
+      "hosting": "local_application", "install_url": "https://aider.chat/docs/install.html",
+      "platforms": [{"os":"linux","architectures":["x86_64","aarch64"]}],
+      "availability": "listed", "redistribution": "permissive_source", "model_weights": "separate_license"
+    },
+    {
+      "id": "librechat", "name": "LibreChat", "group": "local_ai",
+      "purpose": "Self-hosted AI chat UI with configurable model providers",
+      "upstream": "https://www.librechat.ai/",
+      "release": "v0.8.9", "release_url": "https://www.librechat.ai/changelog",
+      "software_license": "MIT", "license_url": "https://github.com/LibreChat-AI/LibreChat",
+      "hosting": "self_hosted_service", "install_url": "https://www.librechat.ai/docs/local/docker",
+      "platforms": [{"os":"linux","architectures":["x86_64"]}],
+      "availability": "listed", "redistribution": "permissive_source", "model_weights": "separate_license"
+    },
+    {
+      "id": "llama2-c", "name": "llama2.c", "group": "local_ai",
+      "purpose": "Local CPU inference for llama2.c checkpoints",
+      "upstream": "https://github.com/karpathy/llama2.c",
+      "release": "350e04fe35433e6d2941dce5a1f53308f87058eb",
+      "release_url": "https://github.com/karpathy/llama2.c/commit/350e04fe35433e6d2941dce5a1f53308f87058eb",
+      "software_license": "MIT", "license_url": "https://github.com/karpathy/llama2.c/blob/350e04fe35433e6d2941dce5a1f53308f87058eb/LICENSE",
+      "hosting": "local_application", "install_url": "https://github.com/karpathy/llama2.c",
+      "platforms": [{"os":"linux","architectures":["x86_64","aarch64"]}],
+      "availability": "visor_installable", "redistribution": "included_source", "model_weights": "separate_license"
+    }
+  ]
+}

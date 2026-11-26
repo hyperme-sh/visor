@@ -55,6 +55,9 @@ jobs:
             sudo apparmor_parser --replace "$profile"
           fi
           bash ci/plugin-contract.sh
+      - name: Local AI catalog contract
+        if: matrix.arch == 'x86_64'
+        run: bash ci/tool-catalog-contract.sh
       - name: Build headless daemon
         run: cargo build --release --locked -p hypermesh-visor --no-default-features --features headless
       - uses: actions/upload-artifact@v4

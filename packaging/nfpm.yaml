@@ -17,6 +17,10 @@ homepage: https://github.com/FyberLabs/hypermesh-visor
 depends:
   - zenity
 contents:
+  - src: src/tool_catalog/llama2c/LICENSE
+    dst: /usr/share/doc/hypermesh-visor/llama2c-LICENSE
+    file_info:
+      mode: 0644
   - src: ${ACP_BIN}
     dst: /usr/bin/hypermesh-acp
     expand: true

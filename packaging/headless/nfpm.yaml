@@ -10,6 +10,10 @@ description: Headless Hypermesh daemon with bundled Conductor; no desktop depend
 homepage: https://github.com/hyperme-sh/hypermesh-visor
 license: MIT
 contents:
+  - src: src/tool_catalog/llama2c/LICENSE
+    dst: /usr/share/doc/hypermesh-visor-headless/llama2c-LICENSE
+    file_info:
+      mode: 0644
   - src: docs/host-health.md
     dst: /usr/share/doc/hypermesh-visor-headless/host-health.md
     file_info:

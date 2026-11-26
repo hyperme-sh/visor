@@ -69,6 +69,12 @@ which includes versioned schemas, a Rust SDK, an independent example, and a
 conformance runner. The first profile receives data only from an admitted
 workspace read.
 
+## Open-source tool catalog
+
+Use `hypermesh-visor catalog list` to browse alternatives. The Linux catalog
+can plan, install, check, and remove a local CPU inference runner on the
+selected machine. [Catalog and installation guide](docs/tool-catalog.md).
+
 ## Linux build and tests
 
 Stable Rust. The workspace tests do not need a display server.

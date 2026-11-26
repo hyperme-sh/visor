@@ -67,6 +67,8 @@ pub struct AppState {
     plugins: Mutex<crate::plugins::Grants>,
     #[cfg(target_os = "linux")]
     plugin_store: Mutex<Option<crate::plugins::store::Store>>,
+    #[cfg(all(test, target_os = "linux"))]
+    github_fixture: Option<std::net::SocketAddr>,
     coding_status: Mutex<serde_json::Value>,
     forum_publications: Mutex<HashMap<Uuid, remote_bot::Publication>>,
     forum_reporter_exchange: tokio::sync::Mutex<()>,
@@ -199,6 +201,8 @@ impl AppState {
             plugins: Mutex::default(),
             #[cfg(target_os = "linux")]
             plugin_store: Mutex::default(),
+            #[cfg(all(test, target_os = "linux"))]
+            github_fixture: None,
             coding_status: Mutex::new(serde_json::json!({})),
             forum_publications: Mutex::new(HashMap::new()),
             forum_reporter_exchange: tokio::sync::Mutex::new(()),

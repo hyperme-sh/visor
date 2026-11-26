@@ -1,4 +1,6 @@
 #[cfg(target_os = "linux")]
+mod github_issue_cli;
+#[cfg(target_os = "linux")]
 mod managed_conductor;
 #[cfg(unix)]
 mod squad_publish;
@@ -31,6 +33,11 @@ struct Options {
 
 fn main() -> ExitCode {
     let mut args = std::env::args().skip(1).peekable();
+    #[cfg(target_os = "linux")]
+    if args.peek().is_some_and(|arg| arg == "github-issue") {
+        args.next();
+        return github_issue_cli::run(args, io::stdout().lock());
+    }
     if args.peek().is_some_and(|arg| arg == "catalog") {
         args.next();
         return match hypermesh_visor::tool_catalog::run(args, io::stdout().lock()) {
@@ -311,6 +318,7 @@ where
                      [--supervisor-url URL] [--supervisor-url-2 URL] [--default-model {DEFAULT_CATALOG_ID}]\n\
                      [--route CATALOG=URL] [--experts CATALOG] [--expert-answer CATALOG=URL]\n\
                      hypermesh-visor catalog --help\n\
+                     hypermesh-visor github-issue --help\n\
                      hypermesh-visor squad-resume HTTPS_ORIGIN FORUM PLANE_TASK_ID AGENT [CURSOR SQUAD_TASK_ID]\n\
                      Use --sources BRIEF_REVISION WORKBOOK_REVISION after cursor zero and the Squad task ID.\n\
                      Add --preview-base PREVIEW_REVISION to verify the current preview revision.\n\

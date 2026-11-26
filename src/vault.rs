@@ -259,6 +259,8 @@ struct StoredSecret {
     value: Zeroizing<Vec<u8>>,
 }
 
+pub(crate) const GITHUB_ISSUES_SECRET: &str = "github-issues-token";
+
 /// Secrets for one session. Dropping the vault clears them.
 pub struct Vault {
     secrets: Vec<StoredSecret>,
@@ -294,6 +296,18 @@ impl Vault {
     }
 
     pub fn get(&self, name: &str) -> Option<Zeroizing<Vec<u8>>> {
+        if name == GITHUB_ISSUES_SECRET {
+            return None;
+        }
+        self.lookup(name)
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) fn github_issues_credential(&self) -> Option<Zeroizing<Vec<u8>>> {
+        self.lookup(GITHUB_ISSUES_SECRET)
+    }
+
+    fn lookup(&self, name: &str) -> Option<Zeroizing<Vec<u8>>> {
         self.secrets
             .iter()
             .find(|secret| secret.name == name)
@@ -304,6 +318,7 @@ impl Vault {
     pub(crate) fn names(&self) -> Vec<String> {
         self.secrets
             .iter()
+            .filter(|secret| secret.name != GITHUB_ISSUES_SECRET)
             .map(|secret| secret.name.clone())
             .collect()
     }

@@ -6,7 +6,7 @@ repo="$(cd "$(dirname "$0")/.." && pwd)"
 scratch="$(mktemp -d)"
 trap 'rm -rf -- "$scratch"' EXIT
 mkdir "$scratch/packages" "$scratch/staging" "$scratch/author"
-cp -R "$repo/plugins/sdk" "$repo/plugins/reference" "$scratch/author/"
+cp -R "$repo/plugins/sdk" "$repo/plugins/reference" "$repo/plugins/github-issue" "$scratch/author/"
 target="$(rustc -vV | sed -n 's/^host: //p')"
 (
     cd "$scratch/author/reference"
@@ -90,3 +90,25 @@ openssl genpkey -algorithm Ed25519 -outform DER -out "$scratch/author-key.der"
     https://packages.example.org/byte-count.visor-plugin < "$scratch/author-key.der" > "$scratch/author.visor-plugin"
 VISOR_PLUGIN_PUBLICATION="$scratch/author.visor-plugin" VISOR_PLUGIN_CONTRACT_DIR="$scratch/packages" cargo test --locked --no-default-features --features headless --lib \
     api::tests::plugin_contract::independent_package_uses_owner_admission -- --ignored --exact
+
+(
+    cd "$scratch/author/github-issue"
+    CARGO_TARGET_DIR="$scratch/build" RUSTFLAGS='-C target-feature=+crt-static' \
+        cargo build --release --locked --offline --target "$target"
+)
+install -D -m 600 "$scratch/build/$target/release/visor-github-issue" "$scratch/github-issue/plugin"
+python3 - "$repo/plugins/github-issue/manifest.template.json" "$scratch/github-issue" <<'PYTHON'
+import hashlib
+import json
+from pathlib import Path
+import sys
+
+template, package = map(Path, sys.argv[1:])
+manifest = json.loads(template.read_text())
+manifest["executable_sha256"] = hashlib.sha256((package / "plugin").read_bytes()).hexdigest()
+(package / "manifest.json").write_text(json.dumps(manifest) + "\n")
+PYTHON
+"$repo/target/debug/hypermesh-plugin-publish" "$scratch/github-issue" \
+    https://packages.example.org/github-issue.visor-plugin < "$scratch/author-key.der" > "$scratch/github-issue.visor-plugin"
+VISOR_GITHUB_ISSUE_PUBLICATION="$scratch/github-issue.visor-plugin" cargo test --locked --no-default-features --features headless --lib \
+    api::tests::plugin_contract::github_issue_plugin_uses_the_selected_account_and_public_repository -- --ignored --exact

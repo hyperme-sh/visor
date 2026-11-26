@@ -1,0 +1,113 @@
+{
+  "manifest_version": 1,
+  "id": "dev.visor.github-issue",
+  "package_version": "0.1.0",
+  "api_versions": [
+    1
+  ],
+  "profile": "local-stdio",
+  "executable_sha256": "",
+  "tools": [
+    {
+      "name": "read-issue",
+      "scope": "github.issue.read",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "issue": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "number": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "url": {
+                "type": "string",
+                "maxLength": 200,
+                "pattern": "^https://github[.]com/"
+              },
+              "state": {
+                "enum": [
+                  "open",
+                  "closed"
+                ]
+              },
+              "title": {
+                "type": "string",
+                "maxLength": 256
+              },
+              "body": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "maxLength": 4096
+              }
+            },
+            "required": [
+              "id",
+              "number",
+              "url",
+              "state",
+              "title",
+              "body"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "issue"
+        ],
+        "additionalProperties": false
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "number": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "url": {
+            "type": "string",
+            "maxLength": 200,
+            "pattern": "^https://github[.]com/"
+          },
+          "state": {
+            "enum": [
+              "open",
+              "closed"
+            ]
+          },
+          "title": {
+            "type": "string",
+            "maxLength": 256
+          },
+          "body": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 4096
+          }
+        },
+        "required": [
+          "id",
+          "number",
+          "url",
+          "state",
+          "title",
+          "body"
+        ],
+        "additionalProperties": false
+      }
+    }
+  ]
+}

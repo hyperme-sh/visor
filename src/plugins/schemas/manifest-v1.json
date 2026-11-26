@@ -21,7 +21,7 @@
         "required": ["name", "scope", "input_schema", "output_schema"],
         "properties": {
           "name": {"type": "string", "maxLength": 63, "pattern": "^[a-z][a-z0-9-]*$"},
-          "scope": {"const": "workspace.read"},
+          "scope": {"enum": ["workspace.read", "github.issue.read"]},
           "input_schema": {"type": "object", "required": ["type"], "properties": {"type": {"const": "object"}}},
           "output_schema": {"type": "object", "required": ["type"], "properties": {"type": {"const": "object"}}}
         }

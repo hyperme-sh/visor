@@ -67,8 +67,9 @@ and [report a problem](https://github.com/hyperme-sh/visor/issues/new).
 
 Build and run a sandboxed local tool using the [public plugin API](plugins/README.md),
 which includes versioned schemas, a Rust SDK, an independent example, and a
-conformance runner. The first profile receives data only from an admitted
-workspace read.
+conformance runner. A workspace grant supplies one admitted file read.
+The [GitHub issue pilot](plugins/github-issue/README.md) supplies one public
+issue from the account and repository selected by the session owner.
 
 ## Open-source tool catalog
 

@@ -1,4 +1,6 @@
 //! Plugin control stays on the same private companion transport as workspace reads.
+mod github;
+
 use super::*;
 use crate::{local_reads as reads, plugins as plugin};
 use plugin::{
@@ -18,6 +20,10 @@ pub(super) fn routes() -> Router<Arc<AppState>> {
         .route("/session/:id/plugins", get(list).post(enable))
         .route("/session/:id/plugins/:plugin", delete(disable))
         .route("/session/:id/plugins/:plugin/call", post(call))
+        .route(
+            "/session/:id/plugins/:plugin/github-issue",
+            get(github::status).post(github::read),
+        )
 }
 
 fn private(link: CompanionLink) -> Result<(), ApiError> {
@@ -212,7 +218,7 @@ struct LocalEnable {
     manifest: PathBuf,
     manifest_sha256: String,
     tool: String,
-    target: String,
+    target: plugin::Target,
 }
 
 #[derive(Deserialize)]
@@ -221,7 +227,7 @@ struct InstalledEnable {
     plugin_id: String,
     revision: Uuid,
     tool: String,
-    target: String,
+    target: plugin::Target,
 }
 
 async fn enable(
@@ -235,39 +241,58 @@ async fn enable(
     if !state.has_session(id) {
         return Err(ApiError::missing());
     }
-    let target = match &body {
-        Enable::Local(body) => &body.target,
-        Enable::Installed(body) => &body.target,
-    };
-    if target.len() > 4096 || !std::path::Path::new(target).is_absolute() {
-        return Err(ApiError::bad("An exact workspace file target is required"));
-    }
     let permit = INSTALLS
         .try_acquire()
         .map_err(|_| ApiError::unavailable("Plugin installer busy"))?;
     let result = tokio::task::spawn_blocking(move || {
         let _permit = permit;
         with_store(&state, |store| {
-            let (package, target) = match body {
+            let (package, target, publisher) = match body {
                 Enable::Local(body) => {
+                    if !matches!(body.target, plugin::Target::Workspace(_)) {
+                        return Ok(ApiError::bad(
+                            "Install this plugin before enabling GitHub access",
+                        )
+                        .into_response());
+                    }
                     let package =
                         plugin::Package::load(&body.manifest, &body.manifest_sha256, &body.tool)?;
                     if store.get(package.key())?.is_some() {
                         return Err(PublicationError::Changed);
                     }
-                    (package, body.target)
+                    (package, body.target, None)
                 }
                 Enable::Installed(body) => (
                     store.activate(&body.plugin_id, body.revision, &body.tool)?,
                     body.target,
+                    store
+                        .get(&body.plugin_id)?
+                        .map(|entry| entry.metadata.publisher),
                 ),
             };
+            if !package.allows(&target) {
+                return Ok(ApiError::bad("Plugin scope does not cover this target").into_response());
+            }
             // Keep membership and the installed revision stable until insertion.
             let sessions = lock(&state.sessions);
-            if !sessions.contains_key(&id) {
+            let Some(session) = sessions.get(&id) else {
                 return Ok(ApiError::missing().into_response());
+            };
+            let access = if let plugin::Target::GitHub(selection) = &target {
+                if !github::has_credential(session) {
+                    return Ok(
+                        ApiError::forbidden("GitHub issue credential unavailable").into_response()
+                    );
+                }
+                Some(json!({"scope":"github.issue.read","target":selection}))
+            } else {
+                None
+            };
+            let mut metadata = lock(&state.plugins).install(id, package, target);
+            if let (Some(metadata), Some(access)) = (&mut metadata, access) {
+                metadata["publisher"] = json!(publisher);
+                metadata["access"] = access;
             }
-            let metadata = lock(&state.plugins).install(id, package, target);
             Ok(match metadata {
                 Some(metadata) => (StatusCode::CREATED, Json(metadata)).into_response(),
                 None => ApiError::conflict("Plugin already enabled or grant limit reached")
@@ -317,7 +342,9 @@ async fn call(
     let grant = lock(&state.plugins)
         .get(id, &plugin_id)
         .ok_or_else(ApiError::missing)?;
-    if body.session_id != id || body.target != grant.target {
+    if body.session_id != id
+        || !matches!(&grant.target, plugin::Target::Workspace(path) if *path == body.target)
+    {
         return Err(ApiError::forbidden("Plugin grant does not cover this read"));
     }
     body.selection.validate().map_err(ApiError::bad)?;
@@ -433,9 +460,19 @@ async fn execute(
         return Err(plugin::Error::Cancelled);
     }
     let staging = control.state.mcp_dir.join("plugin-scratch");
-    hypermesh_local_storage::create_dir(&staging).map_err(|_| plugin::Error::Unavailable)?;
     let input =
         json!({"content_base64":base64::engine::general_purpose::STANDARD.encode(&read.bytes)});
+    run_package(control, &staging, input, deadline, live).await
+}
+
+async fn run_package(
+    control: &Control,
+    staging: &std::path::Path,
+    input: Value,
+    deadline: Instant,
+    live: impl Fn() -> bool,
+) -> Result<Value, plugin::Error> {
+    hypermesh_local_storage::create_dir(staging).map_err(|_| plugin::Error::Unavailable)?;
     let remaining = deadline.saturating_duration_since(Instant::now());
     if remaining.is_zero() {
         return Err(plugin::Error::Timeout);
@@ -443,7 +480,7 @@ async fn execute(
     let result = control
         .grant
         .package
-        .invoke(&staging, input, remaining, live)
+        .invoke(staging, input, remaining, &live)
         .await?;
     if !live() {
         return Err(plugin::Error::Cancelled);

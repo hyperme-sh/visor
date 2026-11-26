@@ -38,8 +38,11 @@ try {
         $identity = Join-Path $fixture 'client_key'
         & ssh-keygen.exe -q -t ed25519 -N '' -f $identity
         if ($LASTEXITCODE -ne 0) { throw 'Fixture SSH client key generation failed' }
-        $guestKey = Invoke-WSL wslpath -a "$identity.pub"
-        $ownerArgs += @('/opt/visor-wsl/ssh_host.py', ('"{0}"' -f $guestKey))
+        $key = (Get-Content -LiteralPath "$identity.pub" -Raw).Trim() -split '\s+'
+        if ($key.Length -lt 2 -or $key[0] -ne 'ssh-ed25519' -or $key[1] -notmatch '^[A-Za-z0-9+/]{68}$') {
+            throw 'The fixture SSH public key was invalid'
+        }
+        $ownerArgs += @('/opt/visor-wsl/ssh_host.py', $key[1])
     } else {
         $ownerArgs += '/opt/visor-wsl/task.py'
     }

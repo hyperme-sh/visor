@@ -145,8 +145,8 @@ class Authority:
             for key in ("device_id", "assignment_id", "session_id"):
                 if request.get(key) != fact[key]:
                     return 403, None
-            UUID(request["request_id"])
-            return 200, {**fact, "version": 1, "request_id": request["request_id"],
+            request_id = str(UUID(request["request_id"]))
+            return 200, {**fact, "version": 1, "request_id": request_id,
                          "principal": "visor-ci-owner", "expires_at": time.time() + 8}
         return 404, None
 
@@ -169,6 +169,8 @@ class PlaneHandler(http.server.BaseHTTPRequestHandler):
             status, value = 400, None
         data = json.dumps(value).encode() if value is not None else b""
         self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("Content-Length", str(len(data)))
         self.end_headers()
         if data:
@@ -203,14 +205,16 @@ def authority_server(authority):
             thread.join(timeout=5)
 
 
-def ssh_config(public_key_path):
-    public_key = Path(public_key_path).read_text(encoding="utf-8").strip().split()
-    if len(public_key) < 2 or public_key[0] != "ssh-ed25519":
+def ssh_config(public_key):
+    key = base64.b64decode(public_key, validate=True)
+    ed25519_prefix = b"\x00\x00\x00\x0bssh-ed25519\x00\x00\x00\x20"
+    if len(key) != len(ed25519_prefix) + 32 or not key.startswith(ed25519_prefix):
         raise RuntimeError("An Ed25519 fixture client key is required")
     home = Path(task.USER.pw_dir)
     authorized = home / ".ssh/authorized_keys"
     authorized.parent.mkdir(mode=0o700)
-    authorized.write_text(" ".join(public_key[:2]) + "\n", encoding="utf-8")
+    encoded_key = base64.b64encode(key).decode("ascii")
+    authorized.write_text(f"ssh-ed25519 {encoded_key}\n", encoding="utf-8")
     authorized.chmod(0o600)
     for path in (authorized.parent, authorized):
         os.chown(path, task.USER.pw_uid, task.USER.pw_gid)

@@ -143,9 +143,14 @@ function waitForTask(expected, previous) {
 
 try {
   await connect();
-  await until('the remote workspace title', () => evaluate(`document.title.toLowerCase().includes(${JSON.stringify(remote.toLowerCase())})`), 120_000);
-  await until('the Workspace Trust prompt', () =>
-    click('.monaco-dialog-box .monaco-button, .monaco-dialog-box button', 'Yes, I trust the authors'), 60_000);
+  const workspaceTitle = device ? '[ssh]' : remote.toLowerCase();
+  await until('the remote workspace title', () => evaluate(
+    `document.title.toLowerCase().includes(${JSON.stringify(workspaceTitle)})`,
+  ), 120_000);
+  const trustButtons = '.monaco-dialog-box .monaco-button, .monaco-dialog-box button';
+  await until('the Workspace Trust prompt', async () =>
+    (device && await click(trustButtons, 'Trust Folder & Continue')) ||
+    await click(trustButtons, 'Yes, I trust the authors'), 60_000);
   const begin = async () => {
     await until('the installed Hypermesh command in the remote window', async () => {
       try {

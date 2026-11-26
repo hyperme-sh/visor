@@ -40,7 +40,7 @@ at their tagged revision. Development bundles are built and checked in CI.
 | Feature | Linux x86_64 and arm64 | Windows x64 and ARM64 | macOS Apple Silicon and Intel |
 | --- | --- | --- | --- |
 | Screen capture (`view`, `watch`) | X11 or Wayland Screenshot portal | Native capture after local Allow. The interactive Windows capture and input contract runs on x64 while [the hosted ARM64 desktop focus issue](https://github.com/actions/runner-images/issues/14069) remains open. | Native capture with Screen Recording permission and local Allow |
-| Mouse, keyboard and physical-input pause | X11. Native Wayland input is disabled pending [#17](https://github.com/hyperme-sh/visor/issues/17). | Native input and pause after local Allow. Elevated windows and secure desktops are refused. | Native input and pause after local Allow, with Accessibility and Input Monitoring permissions. |
+| Mouse, keyboard and physical-input pause | X11. Native Wayland input requires a [physical-input pause signal](docs/wayland-input.md) tracked in [#17](https://github.com/hyperme-sh/visor/issues/17). | Native input and pause after local Allow. Elevated windows and secure desktops are refused. | Native input and pause after local Allow, with Accessibility and Input Monitoring permissions. |
 | Audio capture (`listen`) | PulseAudio-compatible desktop audio | Unavailable | Unavailable |
 | Companion UI | Floating and compact companion. On Wayland the window requires XWayland. | Tray icon and control window | Menu-bar icon and optional floating companion with Reduce Motion support |
 | Automation pointer | X11 overlay hides the system cursor while active | Click-through overlay alongside the system cursor | Click-through overlay alongside the system cursor |

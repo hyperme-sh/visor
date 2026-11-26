@@ -384,16 +384,36 @@ mod tests {
     fn wayland_injection_does_not_open_the_portal() {
         let desktop = LinuxDesktop::new(env(Some("wayland"), Some(":0"), Some("wayland-0"), 1000));
         assert_eq!(desktop.backend_name(), "wayland");
-        let mouse = desktop
-            .mouse(&crate::input::MouseOp::Move {
-                x: 1,
-                y: 2,
-                clickable: false,
-            })
-            .unwrap_err();
-        assert_eq!(mouse.to_string(), WAYLAND_AUTOMATION);
-        let typed = desktop.type_input(&[]).unwrap_err();
-        assert_eq!(typed.to_string(), WAYLAND_AUTOMATION);
+        let attempts = [
+            (
+                "mouse",
+                desktop.mouse(&MouseOp::Move {
+                    x: 1,
+                    y: 2,
+                    clickable: false,
+                }),
+            ),
+            (
+                "type",
+                desktop.type_input(&[Stroke {
+                    keysym: u32::from(b'a'),
+                    down: true,
+                }]),
+            ),
+            (
+                "pointer steps",
+                desktop.pointer_steps(&[PointerStep::Move { x: 1, y: 2 }]),
+            ),
+            ("pointer pipe", desktop.open_pointer().map(drop)),
+            ("keyboard pipe", desktop.open_keyboard().map(drop)),
+        ];
+        for (entry_point, result) in attempts {
+            assert!(
+                matches!(&result, Err(DesktopError::Unavailable(reason)) if reason == WAYLAND_AUTOMATION),
+                "{entry_point}: {result:?}"
+            );
+        }
+        assert!(lock(&desktop.wayland_input).is_none());
     }
 }
 

@@ -44,4 +44,16 @@ jobs:
         with:
           persist-credentials: false
       - name: Compile patches and check queue cutoff and portal opt-in
+        shell: bash
+        env:
+          VISOR_TAKEOVER_EXPORT_DIR: ${{ matrix.arch == 'arm64' && format('{0}/visor-kde-candidate', runner.temp) || '' }}
         run: bash experiments/wayland-takeover/qualify.sh
+      - name: Retain the ARM64 binaries for the isolated hardware session
+        if: matrix.arch == 'arm64'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: visor-kde-candidate-arm64
+          path: ${{ runner.temp }}/visor-kde-candidate/
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 3

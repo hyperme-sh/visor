@@ -38,3 +38,34 @@ cmake -S "$scratch/kwin" -B "$scratch/kwin-build" -G Ninja \
     -DKWIN_BUILD_LOCAL_TAKEOVER_TEST=ON
 cmake --build "$scratch/kwin-build" --target eis eisLocalTakeoverContract --parallel "$jobs"
 dbus-run-session -- "$scratch/kwin-build/bin/eisLocalTakeoverContract"
+
+if [[ -n ${VISOR_TAKEOVER_EXPORT_DIR:-} ]]; then
+    test "$(dpkg --print-architecture)" = arm64
+    cmake --build "$scratch/kwin-build" --target kwin_wayland --parallel "$jobs"
+
+    stage="$scratch/visor-kde-candidate"
+    mkdir "$stage"
+    install -m 0755 "$scratch/kwin-build/bin/kwin_wayland" "$stage/"
+    install -m 0755 "$scratch/kwin-build/bin/libkwin.so.6" "$stage/"
+    install -m 0755 "$scratch/kwin-build/bin/kwin/plugins/eis.so" "$stage/"
+    install -m 0755 "$scratch/portal-kde-build/bin/xdg-desktop-portal-kde" "$stage/"
+    install -m 0755 "$scratch/portal-build/src/xdg-desktop-portal" "$stage/"
+    for component in "$stage"/*; do
+        readelf -h "$component" | grep -E 'Machine:[[:space:]]+AArch64$'
+    done
+    {
+        printf 'visor %s\n' "$(git -C "$patches" rev-parse HEAD)"
+        for name in kwin portal-kde portal; do
+            printf '%s %s\n' "$name" "$(git -C "$scratch/$name" rev-parse HEAD)"
+        done
+    } > "$stage/SOURCE"
+    (cd "$patches" && sha256sum kwin.patch portal-kde.patch portal.patch) > "$stage/PATCHES.sha256"
+    (cd "$stage" && sha256sum SOURCE PATCHES.sha256 kwin_wayland libkwin.so.6 eis.so xdg-desktop-portal-kde xdg-desktop-portal > SHA256SUMS)
+    (cd "$stage" && sha256sum -c SHA256SUMS)
+
+    mkdir -p "$VISOR_TAKEOVER_EXPORT_DIR"
+    export_dir=$(cd "$VISOR_TAKEOVER_EXPORT_DIR" && pwd)
+    tar --sort=name --owner=0 --group=0 --numeric-owner -C "$scratch" \
+        -czf "$export_dir/visor-kde-candidate-arm64.tar.gz" visor-kde-candidate
+    (cd "$export_dir" && sha256sum visor-kde-candidate-arm64.tar.gz > visor-kde-candidate-arm64.tar.gz.sha256)
+fi

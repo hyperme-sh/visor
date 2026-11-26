@@ -42,11 +42,13 @@ jobs:
           apt-get -qy --no-install-recommends build-dep kwin xdg-desktop-portal-kde xdg-desktop-portal
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
       - name: Compile patches and check queue cutoff and portal opt-in
         shell: bash
         env:
           VISOR_TAKEOVER_EXPORT_DIR: ${{ matrix.arch == 'arm64' && format('{0}/visor-kde-candidate', runner.temp) || '' }}
+          VISOR_TAKEOVER_SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: bash experiments/wayland-takeover/qualify.sh
       - name: Retain the ARM64 binaries for the isolated hardware session
         if: matrix.arch == 'arm64'

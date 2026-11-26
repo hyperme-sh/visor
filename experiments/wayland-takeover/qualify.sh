@@ -7,6 +7,16 @@ trap 'rm -rf -- "$scratch"' EXIT
 jobs=${BUILD_JOBS:-4}
 export LC_ALL=C.UTF-8
 
+if [[ -n ${VISOR_TAKEOVER_EXPORT_DIR:-} ]]; then
+    repo=$(cd "$patches/../.." && pwd)
+    candidate_sha=$(git -c "safe.directory=$repo" -C "$repo" rev-parse --verify HEAD)
+    if [[ ! $candidate_sha =~ ^[0-9a-f]{40}$ || $candidate_sha != "${VISOR_TAKEOVER_SOURCE_SHA:-}" ]]; then
+        echo "The ARM64 bundle requires an exact matching Visor source commit" >&2
+        exit 1
+    fi
+    test "$(dpkg --print-architecture)" = arm64
+fi
+
 checkout() {
     local name=$1 repository=$2 revision=$3
     local source="$scratch/$name"
@@ -40,7 +50,6 @@ cmake --build "$scratch/kwin-build" --target eis eisLocalTakeoverContract --para
 dbus-run-session -- "$scratch/kwin-build/bin/eisLocalTakeoverContract"
 
 if [[ -n ${VISOR_TAKEOVER_EXPORT_DIR:-} ]]; then
-    test "$(dpkg --print-architecture)" = arm64
     cmake --build "$scratch/kwin-build" --target kwin_wayland --parallel "$jobs"
 
     stage="$scratch/visor-kde-candidate"
@@ -54,9 +63,10 @@ if [[ -n ${VISOR_TAKEOVER_EXPORT_DIR:-} ]]; then
         readelf -h "$component" | grep -E 'Machine:[[:space:]]+AArch64$'
     done
     {
-        printf 'visor %s\n' "$(git -C "$patches" rev-parse HEAD)"
+        printf 'visor %s\n' "$candidate_sha"
         for name in kwin portal-kde portal; do
-            printf '%s %s\n' "$name" "$(git -C "$scratch/$name" rev-parse HEAD)"
+            component_sha=$(git -C "$scratch/$name" rev-parse --verify HEAD)
+            printf '%s %s\n' "$name" "$component_sha"
         done
     } > "$stage/SOURCE"
     (cd "$patches" && sha256sum kwin.patch portal-kde.patch portal.patch) > "$stage/PATCHES.sha256"

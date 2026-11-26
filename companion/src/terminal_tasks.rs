@@ -3,13 +3,14 @@ use base64::{engine::general_purpose::STANDARD, Engine};
 use hypermesh_visor::workspace_runtime::{wsl_distro, wsl_linux_path};
 use serde_json::{json, Value};
 use std::io::{Read, Write};
+use std::num::NonZeroU16;
 use std::time::Duration;
 use uuid::Uuid;
 
 mod input;
 
 const ENDPOINT: &str = "/terminal-task";
-const USAGE: &str = "Usage: hypermesh-companion --terminal-task WORKSPACE [--host DEVICE_ID] context | run REVISION | watch ID [CURSOR] | interact ID [CURSOR] [--take-over] | cancel ID | request";
+const USAGE: &str = "Usage: hypermesh-companion --terminal-task WORKSPACE [--host DEVICE_ID] context | run REVISION | watch ID [CURSOR] | interact ID [CURSOR] [--take-over] | cancel ID | preview-status ID PORT | request";
 
 struct Connection<'a> {
     workspace: &'a str,
@@ -230,6 +231,16 @@ pub(crate) fn run(args: Vec<String>) -> Result<bool, String> {
             };
             let scope = connection.exchange(json!({"type":"context"}))?;
             return input::attach(&connection, &scope, id, cursor, take_over);
+        }
+        ("preview-status", [id, port]) => {
+            let id = Uuid::parse_str(id).map_err(|_| "Invalid task ID")?;
+            let port = port
+                .parse::<NonZeroU16>()
+                .map_err(|_| "Invalid preview port")?;
+            let scope = connection.exchange(json!({"type":"context"}))?;
+            let mut request = action(&scope, "preview_context", id);
+            request["port"] = json!(port);
+            println!("{}", connection.exchange(request)?);
         }
         ("watch" | "cancel", [id, ..])
             if rest.len() == 1 || command == "watch" && rest.len() == 2 =>

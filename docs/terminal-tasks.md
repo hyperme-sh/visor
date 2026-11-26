@@ -130,3 +130,22 @@ inventory. In the trusted VS Code Remote–SSH workspace, set
 On reconnect, attach by task ID and the last byte cursor. Visor checks the
 expected device and current workspace assignment before returning output or
 accepting input.
+
+
+## Preview eligibility
+
+Set `"preview_port": 4173` in the owner-only declaration for a command that
+serves a development app on that port. The task context advertises the port.
+While the task runs, ask Visor whether the selected port is eligible for a
+preview.
+
+```sh
+hypermesh-companion --terminal-task "$workspace" preview-status "$task_id" 4173
+hypermesh-companion --terminal-task "$workspace" --host "$device_id" preview-status "$task_id" 4173
+```
+
+An eligible response identifies the task, workspace, enrolled device and port.
+The status check requires the current private companion connection, assignment,
+declaration and the local consent under which the task started. Pause,
+cancellation or task completion removes eligibility. A successful status
+request reports eligibility only.

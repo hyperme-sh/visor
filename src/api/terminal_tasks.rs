@@ -3,7 +3,7 @@ use super::*;
 use base64::{engine::general_purpose::STANDARD, Engine};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
-use std::{io::Read, process::Stdio};
+use std::{io::Read, num::NonZeroU16, process::Stdio};
 use tokio::io::AsyncReadExt;
 
 mod interactive;
@@ -51,6 +51,7 @@ struct Task {
     timeout_seconds: u64,
     #[serde(default)]
     interactive: bool,
+    preview_port: Option<NonZeroU16>,
 }
 
 struct Declaration {
@@ -133,6 +134,13 @@ enum Operation {
         binding: String,
         id: Uuid,
     },
+    PreviewContext {
+        boot: Uuid,
+        session: Uuid,
+        binding: String,
+        id: Uuid,
+        port: NonZeroU16,
+    },
     Control {
         boot: Uuid,
         session: Uuid,
@@ -204,6 +212,7 @@ struct Run {
     discarded_output: usize,
     terminal: Option<Terminal>,
     input_consent: Option<tasks::Consent>,
+    preview_consent: Option<tasks::Consent>,
     truncated: bool,
     cancel: bool,
 }
@@ -296,12 +305,16 @@ pub(super) async fn exchange(
             let declared = declaration(&state.mcp_dir, &body.workspace)
                 .map_err(|_| ApiError::forbidden("Terminal task declaration refused"))?;
             let task = declared.map(|d| {
-                json!({
+                let mut task = json!({
                     "revision": d.revision, "cwd": d.task.cwd, "command": d.task.command,
                     "args": d.task.args, "timeout_seconds": d.task.timeout_seconds,
                     "environment": "clean",
                     "interactive": d.task.interactive,
-                })
+                });
+                if let Some(port) = d.task.preview_port {
+                    task["preview_port"] = json!(port);
+                }
+                task
             });
             let mut context = json!({
                 "boot": store.boot, "workspace": body.workspace, "session": authority.session,
@@ -362,6 +375,7 @@ pub(super) async fn exchange(
                 discarded_output: 0,
                 terminal: process.master.clone().map(Terminal::new),
                 input_consent: declared.task.interactive.then_some(consent),
+                preview_consent: declared.task.preview_port.map(|_| consent),
                 truncated: false,
                 cancel: false,
             };
@@ -407,6 +421,34 @@ pub(super) async fn exchange(
             let run = connected_run(records.get_mut(&id), &authority)?;
             run.cancel = true;
             Ok(Json(run.page(id, 0, consent.is_some())?))
+        }
+        Operation::PreviewContext {
+            boot,
+            session,
+            binding,
+            id,
+            port,
+        } => {
+            require_binding(store, &authority, boot, session, &binding)?;
+            let declared = declaration(&state.mcp_dir, &body.workspace)
+                .map_err(|_| ApiError::forbidden("Terminal task declaration refused"))?
+                .filter(|declared| declared.task.preview_port == Some(port))
+                .ok_or_else(|| ApiError::forbidden("Preview port is not declared for this workspace"))?;
+            let mut records = lock(&store.records);
+            let run = connected_run(records.get_mut(&id), &authority)?;
+            let gate = lock(&state.automation);
+            if !run.active()
+                || run.cancel
+                || run.revision != declared.revision
+                || !state.selected_approved.load(Ordering::SeqCst)
+                || !run.preview_consent.is_some_and(|grant| grant.matches(&gate))
+            {
+                return Err(ApiError::forbidden("Workspace preview access unavailable"));
+            }
+            Ok(Json(json!({
+                "state": "eligible", "boot": boot, "session": session, "id": id,
+                "workspace": body.workspace, "device_id": authority.device_id, "port": port,
+            })))
         }
         Operation::Control {
             boot,
@@ -663,6 +705,7 @@ mod tests {
             discarded_output: 32,
             terminal: None,
             input_consent: None,
+            preview_consent: None,
             truncated: false,
             cancel: false,
         };
@@ -736,21 +779,22 @@ mod tests {
             .control_automation_at(Control::Start, true, Some(session), Some(epoch))
             .is_ok());
         let config = directory.join("terminal-task.json");
-        let write_task = |command: &str, args: &[&str], interactive: bool| {
+        let write_task = |command: &str, args: &[&str], interactive: bool, preview_port: Option<u16>| {
             if config.exists() {
                 fs::remove_file(&config).unwrap();
             }
             let mut output =
                 hypermesh_local_storage::open(&config, hypermesh_local_storage::Open::New).unwrap();
-            writeln!(
-                output,
-                "{}",
-                json!({"workspace":workspace,"cwd":cwd,
-                "command":command,"args":args,"timeout_seconds":10,"interactive":interactive})
-            )
-            .unwrap();
+            let mut task = json!({
+                "workspace": workspace, "cwd": cwd, "command": command, "args": args,
+                "timeout_seconds": 10, "interactive": interactive,
+            });
+            if let Some(port) = preview_port {
+                task["preview_port"] = json!(port);
+            }
+            writeln!(output, "{task}").unwrap();
         };
-        write_task("/bin/sh", &["-c", "pwd; printf x >> launches"], false);
+        write_task("/bin/sh", &["-c", "pwd; printf x >> launches"], false, None);
         let app = companion_router(state.clone());
         let network = router(state.clone());
         assert_eq!(
@@ -766,6 +810,7 @@ mod tests {
         let (status, scope) = call(&app, &workspace, json!({"type":"context"})).await;
         assert_eq!(status, StatusCode::OK, "{scope}");
         assert_eq!(scope["task"]["cwd"], json!(cwd));
+        assert!(scope["task"].get("preview_port").is_none());
         assert_eq!(scope["device_id"], json!(device));
         let context = json!({"type":"context"});
         assert_eq!(
@@ -829,12 +874,57 @@ mod tests {
         assert_eq!(attached["exit_code"], finished["exit_code"]);
         assert_eq!(attached["output_base64"], "");
 
-        write_task("/bin/sleep", &["10"], false);
+        let preview_context = |id: Uuid, port: u16| {
+            let mut request = base("preview_context", id);
+            request["port"] = json!(port);
+            request
+        };
+        assert_eq!(
+            call(&app, &workspace, preview_context(id, 4173)).await.0,
+            StatusCode::FORBIDDEN
+        );
+        write_task("/bin/sleep", &["10"], false, Some(4173));
         let (_, updated) = call(&app, &workspace, json!({"type":"context"})).await;
+        assert_eq!(updated["task"]["preview_port"], 4173);
         let active = Uuid::new_v4();
         let mut start = base("start", active);
         start["revision"] = updated["task"]["revision"].clone();
         assert_eq!(call(&app, &workspace, start).await.0, StatusCode::OK);
+        let preview = preview_context(active, 4173);
+        let eligible = json!({
+            "state": "eligible", "boot": scope["boot"], "session": session, "id": active,
+            "workspace": workspace, "device_id": device, "port": 4173,
+        });
+        assert_eq!(
+            call_device(&app, &workspace, preview.clone(), Some(device)).await,
+            (StatusCode::OK, eligible.clone())
+        );
+        assert_eq!(
+            call(&app, &workspace, preview.clone()).await,
+            (StatusCode::OK, eligible)
+        );
+        assert_eq!(
+            call_device(&app, &workspace, preview.clone(), Some(Uuid::new_v4())).await.0,
+            StatusCode::FORBIDDEN
+        );
+        assert_eq!(call(&app, &directory, preview.clone()).await.0, StatusCode::FORBIDDEN);
+        assert_eq!(call(&network, &workspace, preview.clone()).await.0, StatusCode::FORBIDDEN);
+        assert_eq!(
+            call(&app, &workspace, preview_context(active, 4174)).await.0,
+            StatusCode::FORBIDDEN
+        );
+        assert_eq!(
+            call(&app, &workspace, preview_context(active, 0)).await.0,
+            StatusCode::UNPROCESSABLE_ENTITY
+        );
+        assert_eq!(
+            call(&app, &workspace, preview_context(Uuid::new_v4(), 4173)).await.0,
+            StatusCode::NOT_FOUND
+        );
+        assert_eq!(
+            call(&app, &workspace, preview_context(id, 4173)).await.0,
+            StatusCode::FORBIDDEN
+        );
         let control = |id: Uuid, terminal: Value, request: Value| {
             let mut body = base("control", id);
             body["terminal"] = terminal;
@@ -861,6 +951,7 @@ mod tests {
             call(&app, &workspace, base("cancel", active)).await.0,
             StatusCode::OK
         );
+        assert_eq!(call(&app, &workspace, preview).await.0, StatusCode::FORBIDDEN);
         let mut cancelled = base("read", active);
         cancelled["cursor"] = json!(0);
         tokio::time::timeout(Duration::from_secs(3), async {
@@ -881,6 +972,7 @@ mod tests {
                 r#"printf 'ready\n'; IFS= read -r line; printf 'first=%s\n' "$line"; stty size; IFS= read -r again; printf 'second=%s\n' "$again"; sleep 10"#,
             ],
             true,
+            Some(4173),
         );
         let (_, interactive) = call(&app, &workspace, json!({"type":"context"})).await;
         let active = Uuid::new_v4();
@@ -978,6 +1070,10 @@ mod tests {
         })
         .await
         .unwrap();
+        assert_eq!(
+            call(&app, &workspace, preview_context(active, 4173)).await.0,
+            StatusCode::FORBIDDEN
+        );
         let mut refused = base("start", Uuid::new_v4());
         refused["revision"] = updated["task"]["revision"].clone();
         assert_eq!(

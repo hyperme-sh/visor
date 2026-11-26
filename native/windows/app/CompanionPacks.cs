@@ -171,6 +171,12 @@ internal sealed class CompanionPacks : IDisposable
         playbackStream?.Dispose(); playbackStream = null;
     }
 
+    internal void Quiet()
+    {
+        pendingAudio = false;
+        StopAudio();
+    }
+
     public void Dispose()
     {
         disposed = true; StopAudio(); appearance?.Dispose();

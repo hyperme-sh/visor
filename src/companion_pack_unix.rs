@@ -9,7 +9,7 @@ const DIRECTORY: libc::c_int = libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CL
 
 pub(super) struct Directory(File);
 
-pub(super) fn open_root(config: &Path) -> io::Result<File> {
+pub(crate) fn open_root(config: &Path) -> io::Result<File> {
     OpenOptions::new()
         .read(true)
         .custom_flags(DIRECTORY)

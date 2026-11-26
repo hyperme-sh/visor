@@ -20,6 +20,7 @@ pub mod companion_manager;
 pub mod companion_recovery;
 pub mod companion_docker;
 pub mod companion_lease;
+pub mod companion_catalog;
 pub mod companion_packs;
 pub mod companion_runtime;
 pub mod companion_sets;

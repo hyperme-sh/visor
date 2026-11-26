@@ -47,14 +47,15 @@ at their tagged revision. Development bundles are built and checked in CI.
 | Companion UI | Floating and compact companion. On Wayland the window requires XWayland. | Tray icon and control window | Menu-bar icon and optional floating companion with Reduce Motion support |
 | Automation pointer | X11 overlay hides the system cursor while active | Click-through overlay alongside the system cursor | Click-through overlay alongside the system cursor |
 | [Installed companion packs](docs/companion-packs.md) | Appearance and cursor art plus prerecorded voices. Offline picker with independent appearance and voice choices. | Offline appearance and voice picker in the tray, with cursor art and local speech cues. | Offline appearance and voice picker in the menu bar, with floating art, cursor sprites and local speech cues. |
+| [Community pack catalog](docs/companion-packs.md#browse-community-packs) | Browse, preview artwork and voice, download, and remove installed packs | Browse, preview artwork and voice, download, and remove installed packs | Browse, preview artwork and voice, download, and remove installed packs |
 | Session chooser and destinations | Session selection, forum, VS Code and CLI from the companion | Session selection, forum, VS Code and CLI via PowerShell or WSL | Session selection, forum and VS Code in the menu. CLI included in the bundle. |
 | [MCP discovery and connections](docs/mcp-discovery.md) | Source review, connection controls, profile and server editors | Native source review and connection controls | Native source review and connection controls |
 | MCP server transports | HTTP/SSE and stdio | HTTP/SSE. Isolated stdio worker tracked in [#29](https://github.com/hyperme-sh/visor/issues/29). | HTTP/SSE. Isolated stdio worker tracked in [#29](https://github.com/hyperme-sh/visor/issues/29). |
 | [Managed companion sets](docs/companion-sets.md) | Save and restore Linux container companions | Unavailable | Unavailable |
 
 Update the affected rows when a PR changes a desktop feature or adds a build
-target. Link outstanding platform gaps so they stay visible. The community pack
-catalog and downloads are tracked in [#359](https://github.com/hyperme-sh/visor/issues/359).
+target. Link outstanding platform gaps so they stay visible. Contributors can
+submit artwork and voices to [hyperme-sh/companion-packs](https://github.com/hyperme-sh/companion-packs).
 
 See [downloads](https://hyperme.sh/visor),
 [Linux v0.1.0 installation](docs/linux-v0.1.0.md),

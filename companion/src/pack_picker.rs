@@ -1,4 +1,4 @@
-//! Offline picker for packs already in the local configuration directory.
+//! Installed pack choices and the entry point for browsing the community catalog.
 
 use std::path::Path;
 
@@ -7,6 +7,7 @@ use crate::mcp_dialog::{choose, dialog};
 use crate::pointer::Art;
 use crate::settings;
 use crate::voice::Voice;
+use hypermesh_visor::companion_catalog;
 use hypermesh_visor::companion_packs::{installed, Medium, Pack};
 
 pub enum Selection {
@@ -19,6 +20,27 @@ pub enum Selection {
         id: String,
         voice: Voice,
     },
+    Removed {
+        id: String,
+    },
+}
+
+pub fn load_saved(
+    config: &Path,
+    appearance: Option<&str>,
+    voice: Option<&str>,
+) -> (Option<Pack>, Option<Pack>) {
+    if let Err(error) = companion_catalog::recover_installs(config) {
+        eprintln!("hypermesh-companion: companion pack recovery: {error}");
+    }
+    let load = |setting, id: Option<&str>| match Pack::load(config, id?) {
+        Ok(pack) => Some(pack),
+        Err(error) => {
+            eprintln!("hypermesh-companion: {setting}: {error}; using the default");
+            None
+        }
+    };
+    (load("appearance_pack", appearance), load("voice_pack", voice))
 }
 
 pub fn load_appearance(pack: Option<&Pack>) -> (Sprites, Art) {
@@ -45,10 +67,24 @@ fn pick(
     config: &Path,
     ui: &mut impl FnMut(&[String], Option<&str>) -> Result<Option<String>, String>,
 ) -> Result<Option<Selection>, String> {
-    let tracks = ["Appearance".to_owned(), "Voice".to_owned()];
+    let tracks = [
+        "Appearance",
+        "Voice",
+        "Browse community packs",
+        "Remove installed pack",
+    ]
+    .map(str::to_owned);
     let Some(track) = choose(ui, "Companion packs", "Choose what to change", &tracks)? else {
         return Ok(None);
     };
+    if track == 2 {
+        crate::pack_catalog_dialog::browse(config, ui)?;
+        return Ok(None);
+    }
+    if track == 3 {
+        return crate::pack_catalog_dialog::remove(config, ui)
+            .map(|id| id.map(|id| Selection::Removed { id }));
+    }
     let current = settings::presentation(config);
     let appearance = track == 0;
     let (default, selected) = if appearance {
@@ -101,6 +137,26 @@ fn pick(
 mod tests {
     use super::*;
     use std::fs;
+
+    #[test]
+    fn startup_recovers_the_saved_appearance_and_voice_offline() {
+        let config = std::env::temp_dir().join(format!("visor-picker-{}", uuid::Uuid::new_v4()));
+        let root = config.join("companion-packs");
+        for (id, name) in [("rabbit", "Rabbit"), ("robot", "Robot")] {
+            let backup = root.join(format!(".previous-{id}"));
+            fs::create_dir_all(&backup).unwrap();
+            fs::write(
+                backup.join("pack.json"),
+                format!(r#"{{"format":1,"name":"{name}"}}"#),
+            )
+            .unwrap();
+        }
+        let (appearance, voice) = load_saved(&config, Some("rabbit"), Some("robot"));
+        assert_eq!(appearance.unwrap().manifest.name, "Rabbit");
+        assert_eq!(voice.unwrap().manifest.name, "Robot");
+        assert!(root.join("rabbit").is_dir() && root.join("robot").is_dir());
+        fs::remove_dir_all(config).unwrap();
+    }
 
     #[test]
     fn choices_are_offline_and_independent() {

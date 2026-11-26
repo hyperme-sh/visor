@@ -54,6 +54,8 @@ internal sealed class Companion : Form
         var packMenu = new ToolStripMenuItem("Companion packs");
         packMenu.DropDownItems.Add("Appearance", null, async (_, _) => await ChangePack("appearance"));
         packMenu.DropDownItems.Add("Voice", null, async (_, _) => await ChangePack("voice"));
+        packMenu.DropDownItems.Add("Browse community packs", null, async (_, _) => await ChangePack("catalog"));
+        packMenu.DropDownItems.Add("Remove installed pack", null, async (_, _) => await ChangePack("remove"));
         menu.Items.Add(packMenu);
         menu.Items.Add("Open session forum", null, async (_, _) => await OpenDestination(false));
         menu.Items.Add("Open workspace in VS Code", null, async (_, _) => await OpenDestination(true));
@@ -256,9 +258,20 @@ internal sealed class Companion : Form
         if (!started || closing || loadingPacks || packBusy) return;
         packBusy = true;
         Pause("Paused for companion pack selection");
-        try { await packs.Choose(this, medium); }
-        catch { if (!closing) message = "The companion pack could not be loaded or saved."; }
+        try
+        {
+            if (medium == "catalog") await CommunityPacks.Browse(this, packs);
+            else if (medium == "remove") await CommunityPacks.Remove(this, packs);
+            else await packs.Choose(this, medium);
+        }
+        catch (InvalidOperationException error) { ShowPackError(error.Message); }
+        catch { ShowPackError("The companion pack operation could not be completed."); }
         finally { packBusy = false; if (!closing) UpdateStatus(); }
+    }
+
+    private void ShowPackError(string detail)
+    {
+        if (!closing) MessageBox.Show(this, detail, "Companion pack operation failed", MessageBoxButtons.OK, MessageBoxIcon.Error);
     }
     private void PhysicalInput()
     {

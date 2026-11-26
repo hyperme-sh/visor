@@ -9,6 +9,7 @@ use base64::Engine as _;
 use serde::Deserialize;
 use serde_json::{json, Value};
 
+use crate::companion_catalog as catalog;
 use crate::companion_packs::cursor::{self, Motion};
 use crate::companion_packs::{self as packs, ClipSpec, Medium, Pack, PcmWave, Png, Signals, State};
 use hypermesh_local_storage as storage;
@@ -48,12 +49,83 @@ struct CursorSample {
 }
 
 pub(crate) fn request(config: &Path, input: Value) -> Value {
+    if input["action"]
+        .as_str()
+        .is_some_and(|action| action.starts_with("pack-catalog-"))
+    {
+        let body = community_request(config, input).unwrap_or_else(|error| json!({"error":error}));
+        return json!({"status":200,"body":body});
+    }
     let Ok(input) = serde_json::from_value::<Request>(input) else {
         return json!({"status":400,"body":null});
     };
     match run(config, input) {
         Ok(body) => json!({"status":200,"body":body}),
         Err(()) => json!({"status":409,"body":null}),
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "action")]
+enum CommunityRequest {
+    #[serde(rename = "pack-catalog-list")]
+    List,
+    #[serde(rename = "pack-catalog-preview")]
+    Preview {
+        entry: catalog::Entry,
+        revision: String,
+        medium: catalog::Preview,
+    },
+    #[serde(rename = "pack-catalog-install")]
+    Install {
+        entry: catalog::Entry,
+        revision: String,
+        replace: bool,
+    },
+    #[serde(rename = "pack-catalog-remove")]
+    Remove { id: String },
+}
+
+fn community_request(config: &Path, input: Value) -> Result<Value, String> {
+    match serde_json::from_value::<CommunityRequest>(input)
+        .map_err(|_| "Invalid catalog selection.")?
+    {
+        CommunityRequest::List => Ok(json!(catalog::Catalog::fetch(config)?)),
+        CommunityRequest::Preview {
+            entry,
+            revision,
+            medium,
+        } => {
+            let bytes = entry.preview(&revision, medium)?;
+            Ok(json!({"media":base64::engine::general_purpose::STANDARD.encode(bytes)}))
+        }
+        CommunityRequest::Install {
+            entry,
+            revision,
+            replace,
+        } => {
+            entry.install(config, &revision, replace)?;
+            Ok(json!({"changed":true}))
+        }
+        CommunityRequest::Remove { id } => {
+            catalog::remove(config, &id)?;
+            let table = settings(config)
+                .map_err(|_| "The pack was removed. Saved choices could not be read.")?;
+            if ["appearance_pack", "voice_pack"]
+                .iter()
+                .any(|key| value(&table, key) == Some(id.as_str()))
+            {
+                update_settings(config, |table| {
+                    for key in ["appearance_pack", "voice_pack"] {
+                        if value(table, key) == Some(id.as_str()) {
+                            table.remove(key);
+                        }
+                    }
+                })
+                .map_err(|_| "The pack was removed. Saved choices could not be updated.")?;
+            }
+            Ok(json!({"changed":true}))
+        }
     }
 }
 
@@ -69,6 +141,7 @@ fn run(config: &Path, input: Request) -> Result<Value, ()> {
             }}))
         }
         Request::Load { medium } => {
+            catalog::recover_installs(config).map_err(|_| ())?;
             let table = settings(config).map_err(|_| ())?;
             let id = value(&table, setting(medium)).unwrap_or_default();
             // Saved packs can be removed or replaced while the app is closed.
@@ -162,16 +235,25 @@ fn settings(config: &Path) -> io::Result<toml::Table> {
 }
 
 fn save(config: &Path, key: &str, id: &str) -> io::Result<toml::Table> {
+    update_settings(config, |table| {
+        if id.is_empty() {
+            table.remove(key);
+        } else {
+            table.insert(key.to_owned(), toml::Value::String(id.to_owned()));
+        }
+    })
+}
+
+fn update_settings(
+    config: &Path,
+    change: impl FnOnce(&mut toml::Table),
+) -> io::Result<toml::Table> {
     fs::create_dir_all(config)?;
     let lock = storage::open(&config.join("companion-packs.lock"), storage::Open::Lock)?;
     storage::lock(&lock)?;
     let _held = storage::UnlockOnDrop(&lock);
     let mut table = settings(config)?;
-    if id.is_empty() {
-        table.remove(key);
-    } else {
-        table.insert(key.to_owned(), toml::Value::String(id.to_owned()));
-    }
+    change(&mut table);
     let body = toml::to_string(&table).map_err(io::Error::other)?;
     if body.len() > SETTINGS_LIMIT {
         return Err(io::Error::new(
@@ -293,17 +375,7 @@ fn png(image: Png, size: (u32, u32)) -> Option<String> {
 }
 
 fn wav(wave: PcmWave) -> String {
-    let size = wave.pcm.len() as u32;
-    let mut bytes = Vec::with_capacity(44 + wave.pcm.len());
-    bytes.extend_from_slice(b"RIFF");
-    bytes.extend_from_slice(&(36 + size).to_le_bytes());
-    bytes.extend_from_slice(b"WAVEfmt \x10\0\0\0\x01\0\x01\0");
-    bytes.extend_from_slice(&wave.rate.to_le_bytes());
-    bytes.extend_from_slice(&(wave.rate * 2).to_le_bytes());
-    bytes.extend_from_slice(b"\x02\0\x10\0data");
-    bytes.extend_from_slice(&size.to_le_bytes());
-    bytes.extend_from_slice(&wave.pcm);
-    base64::engine::general_purpose::STANDARD.encode(bytes)
+    base64::engine::general_purpose::STANDARD.encode(wave.wave_bytes())
 }
 
 #[cfg(test)]
@@ -385,6 +457,19 @@ mod tests {
         );
         assert_eq!(select("")["status"], 200);
         assert_eq!(value(&settings(&config).unwrap(), "appearance_pack"), None);
+        assert_eq!(select("rabbit")["status"], 200);
+        assert_eq!(voice("rabbit")["status"], 200);
+        assert_eq!(
+            request(
+                &config,
+                json!({"action":"pack-catalog-remove","id":"rabbit"})
+            )["body"]["changed"],
+            true
+        );
+        let remaining = settings(&config).unwrap();
+        assert_eq!(value(&remaining, "appearance_pack"), None);
+        assert_eq!(value(&remaining, "voice_pack"), None);
+        assert_eq!(value(&remaining, "mood"), Some("calm"));
         fs::remove_dir_all(&config).unwrap();
     }
 

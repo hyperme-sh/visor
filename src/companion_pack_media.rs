@@ -11,6 +11,22 @@ pub struct PcmWave {
     pub pcm: Vec<u8>,
 }
 
+impl PcmWave {
+    pub fn wave_bytes(&self) -> Vec<u8> {
+        let size = self.pcm.len() as u32;
+        let mut bytes = Vec::with_capacity(44 + self.pcm.len());
+        bytes.extend_from_slice(b"RIFF");
+        bytes.extend_from_slice(&(36 + size).to_le_bytes());
+        bytes.extend_from_slice(b"WAVEfmt \x10\0\0\0\x01\0\x01\0");
+        bytes.extend_from_slice(&self.rate.to_le_bytes());
+        bytes.extend_from_slice(&(self.rate * 2).to_le_bytes());
+        bytes.extend_from_slice(b"\x02\0\x10\0data");
+        bytes.extend_from_slice(&size.to_le_bytes());
+        bytes.extend_from_slice(&self.pcm);
+        bytes
+    }
+}
+
 pub fn read_png(bytes: &[u8], custom_size: Option<(u32, u32)>) -> Result<Png, String> {
     let input = std::io::Cursor::new(bytes);
     let mut decoder = if custom_size.is_some() {

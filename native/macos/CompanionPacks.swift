@@ -6,7 +6,14 @@ private struct PackResponse<Body: Decodable>: Decodable {
 }
 
 private func packRequest<Body: Decodable>(_ fields: [String: Any], as type: Body.Type) -> Body? {
-    guard let request = try? JSONSerialization.data(withJSONObject: fields) else { return nil }
+    guard let request = try? JSONSerialization.data(withJSONObject: fields),
+          let data = packResponseData(request),
+          let answer = try? JSONDecoder().decode(PackResponse<Body>.self, from: data),
+          answer.status == 200 else { return nil }
+    return answer.body
+}
+
+func packResponseData(_ request: Data) -> Data? {
     var output: UnsafeMutablePointer<UInt8>?
     var size = 0
     let code = request.withUnsafeBytes { raw in
@@ -14,10 +21,8 @@ private func packRequest<Body: Decodable>(_ fields: [String: Any], as type: Body
     }
     guard let output else { return nil }
     defer { free(output) }
-    guard code == 0, size > 0, size <= 12 * 1024 * 1024,
-          let answer = try? JSONDecoder().decode(PackResponse<Body>.self, from: Data(bytes: output, count: size)),
-          answer.status == 200 else { return nil }
-    return answer.body
+    guard code == 0, size > 0, size <= 12 * 1024 * 1024 else { return nil }
+    return Data(bytes: output, count: size)
 }
 
 private func loadPack<Body: Decodable & Sendable>(_ fields: [String: String], as type: Body.Type) async -> Body? {
@@ -101,6 +106,7 @@ func nativePackFrameIndex(count: Int, interval: UInt64, loop: Bool, elapsed: UIn
     private var clipAt: UInt64 = 0
     private var selectedAudio: String?
     private var player: NSSound?
+    private var previewPlayer: NSSound?
     private var pendingAudio = false
     private var readyAt: UInt64 = 0
     private var stopped = false
@@ -240,7 +246,17 @@ func nativePackFrameIndex(count: Int, interval: UInt64, loop: Bool, elapsed: UIn
         selectedAudio = key; pendingAudio = key != nil
     }
 
+    func previewVoice(_ data: Data) -> Bool {
+        pendingAudio = false
+        player?.stop(); player = nil
+        previewPlayer?.stop()
+        previewPlayer = NSSound(data: data)
+        return previewPlayer?.play() == true
+    }
+
+    func stopPreview() { previewPlayer?.stop(); previewPlayer = nil }
+
     func stop() {
-        stopped = true; selectAudio(nil)
+        stopped = true; selectAudio(nil); stopPreview()
     }
 }

@@ -16,7 +16,7 @@ pub(super) struct Directory {
     _directory: File,
 }
 
-pub(super) fn open_root(config: &Path) -> io::Result<File> {
+pub(crate) fn open_root(config: &Path) -> io::Result<File> {
     open_directory(&config.join("companion-packs"))
 }
 

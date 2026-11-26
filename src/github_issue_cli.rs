@@ -2,10 +2,14 @@ use http_body_util::{BodyExt, Full, Limited};
 use hyper::{body::Bytes, client::conn::http1, Method, Request};
 use hyper_util::rt::TokioIo;
 use serde_json::{json, Value};
-use std::{io::Write, process::ExitCode, time::Duration};
+use std::{
+    io::{Read, Write},
+    process::ExitCode,
+    time::Duration,
+};
 use uuid::Uuid;
 
-const USAGE: &str = "Usage: hypermesh-visor github-issue enable SESSION PLUGIN REVISION ACCOUNT OWNER/REPO | status SESSION PLUGIN | read SESSION PLUGIN ACCOUNT OWNER/REPO NUMBER | revoke SESSION PLUGIN";
+const USAGE: &str = "Usage: hypermesh-visor github-issue enable SESSION PLUGIN REVISION ACCOUNT OWNER/REPO [--code-mode] | status SESSION PLUGIN | read SESSION PLUGIN ACCOUNT OWNER/REPO NUMBER | code SESSION PLUGIN FILE|- | code-audit SESSION PLUGIN | revoke SESSION PLUGIN";
 const UNAVAILABLE: &str = "Visor companion socket unavailable";
 
 pub(crate) fn run(args: impl IntoIterator<Item = String>, mut output: impl Write) -> ExitCode {
@@ -65,16 +69,20 @@ fn request(args: &[String]) -> Result<Request<Full<Bytes>>, &'static str> {
         Ok::<_, &'static str>(json!({"account":account,"repository":repository}))
     };
     let (method, path, body) = match (command.as_str(), rest) {
-        ("enable", [revision, account, repository]) => (
-            Method::POST,
-            base,
-            json!({
+        ("enable", [revision, account, repository, options @ ..])
+            if options.is_empty() || options == ["--code-mode"] =>
+        {
+            let mut body = json!({
                 "plugin_id":package,
                 "revision":Uuid::parse_str(revision).map_err(|_| "Invalid plugin revision")?,
                 "tool":"read-issue",
                 "target":target(account, repository)?,
-            }),
-        ),
+            });
+            if !options.is_empty() {
+                body["code_mode"] = json!(true);
+            }
+            (Method::POST, base, body)
+        }
         ("status", []) => (Method::GET, issue, Value::Null),
         ("read", [account, repository, number]) => (
             Method::POST,
@@ -84,6 +92,12 @@ fn request(args: &[String]) -> Result<Request<Full<Bytes>>, &'static str> {
                 "number":number.parse::<u64>().map_err(|_| "Invalid issue number")?,
             }),
         ),
+        ("code", [file]) => (
+            Method::POST,
+            format!("{issue}/code"),
+            json!({"code":read_code(file)?}),
+        ),
+        ("code-audit", []) => (Method::GET, format!("{issue}/code"), Value::Null),
         ("revoke", []) => (Method::DELETE, format!("{base}/{package}"), Value::Null),
         _ => return Err(USAGE),
     };
@@ -102,12 +116,32 @@ fn request(args: &[String]) -> Result<Request<Full<Bytes>>, &'static str> {
         .map_err(|_| "Invalid local plugin request")
 }
 
+fn read_code(file: &str) -> Result<String, &'static str> {
+    const MAX_SCRIPT: usize = 8 * 1024;
+    let input: Box<dyn Read> = if file == "-" {
+        Box::new(std::io::stdin())
+    } else {
+        Box::new(std::fs::File::open(file).map_err(|_| "Unable to open JavaScript input")?)
+    };
+    let mut code = String::new();
+    input
+        .take(MAX_SCRIPT as u64 + 1)
+        .read_to_string(&mut code)
+        .map_err(|_| "Unable to read UTF-8 JavaScript input")?;
+    if code.len() > MAX_SCRIPT || code.trim().is_empty() {
+        return Err("Code Mode accepts 1 to 8192 bytes of JavaScript");
+    }
+    Ok(code)
+}
+
 async fn send(request: Request<Full<Bytes>>) -> Result<(bool, Value), &'static str> {
     let path = hypermesh_visor::runtime_dir()
         .map_err(|_| UNAVAILABLE)?
         .join("companion.sock");
     let endpoint = hypermesh_local_transport::Endpoint::unix(path).map_err(|_| UNAVAILABLE)?;
-    tokio::time::timeout(Duration::from_secs(12), async move {
+    let code = request.uri().path().ends_with("/github-issue/code");
+    let limit = Duration::from_secs(if code { 17 } else { 12 });
+    tokio::time::timeout(limit, async move {
         let stream = hypermesh_local_transport::connect(&endpoint)
             .await
             .map_err(|_| UNAVAILABLE)?;

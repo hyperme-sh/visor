@@ -2,9 +2,11 @@
 name = "visor-github-issue"
 version = "0.1.0"
 edition = "2021"
+rust-version = "1.87"
 license = "MIT"
 
 [dependencies]
+rquickjs = "=0.14.0"
 serde_json = "1"
 visor-plugin-sdk = { path = "../sdk" }
 

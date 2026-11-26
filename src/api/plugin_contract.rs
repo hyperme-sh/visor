@@ -500,11 +500,18 @@ async fn github_issue_plugin_uses_the_selected_account_and_public_repository() {
     let calls = Arc::new(AtomicUsize::new(0));
     let fixture_mode = Arc::clone(&mode);
     let fixture_calls = Arc::clone(&calls);
+    let second_read = Arc::new(tokio::sync::Notify::new());
+    let release_second = Arc::new(tokio::sync::Notify::new());
+    let fixture_second = Arc::clone(&second_read);
+    let fixture_release = Arc::clone(&release_second);
     let fixture = Router::new().fallback(get(move |uri: axum::http::Uri, headers: HeaderMap| {
         let current = fixture_mode.load(Ordering::Acquire);
         fixture_calls.fetch_add(1, Ordering::AcqRel);
+        let fixture_mode = Arc::clone(&fixture_mode);
+        let fixture_second = Arc::clone(&fixture_second);
+        let fixture_release = Arc::clone(&fixture_release);
         async move {
-            let is_issue = uri.path().ends_with("/issues/7");
+            let is_issue = uri.path().starts_with("/repos/Example/Project/issues/");
             assert_eq!(headers["x-github-api-version"], "2026-03-10");
             if is_issue {
                 assert!(!headers.contains_key(header::AUTHORIZATION));
@@ -519,20 +526,51 @@ async fn github_issue_plugin_uses_the_selected_account_and_public_repository() {
                 return reply(StatusCode::UNAUTHORIZED, json!({"message":TOKEN}));
             }
             match uri.path() {
-                "/user" => reply(StatusCode::OK, json!({"id":21})),
-                "/repos/Example/Project" => reply(StatusCode::OK, json!({
-                    "full_name":"Example/Project", "private":current == 1,
-                    "visibility":if current == 1 {"private"} else {"public"},
-                })),
-                "/repos/Example/Project/issues/7" if current == 4 => {
-                    reply(StatusCode::NOT_FOUND, json!({"message":"repository just changed visibility"}))
+                "/user" => reply(
+                    StatusCode::OK,
+                    json!({"id":if current == 6 { 22 } else { 21 }}),
+                ),
+                "/repos/Example/Project" => reply(
+                    StatusCode::OK,
+                    json!({
+                        "full_name":"Example/Project", "private":current == 1,
+                        "visibility":if current == 1 {"private"} else {"public"},
+                    }),
+                ),
+                "/repos/Example/Project/issues/7" if current == 4 => reply(
+                    StatusCode::NOT_FOUND,
+                    json!({"message":"repository just changed visibility"}),
+                ),
+                "/repos/Example/Project/issues/7" => {
+                    if current == 5 {
+                        fixture_mode.store(6, Ordering::Release);
+                    }
+                    reply(
+                        StatusCode::OK,
+                        json!({
+                            "id":1234, "number":7, "title":"Fixture issue",
+                            "body":format!("{TOKEN} see #8"), "state":"open",
+                            "repository_url":"https://api.github.com/repos/Example/Project",
+                            "html_url":"https://github.com/Example/Project/issues/7",
+                            "labels":[{"name":"excluded"}],
+                        }),
+                    )
                 }
-                "/repos/Example/Project/issues/7" => reply(StatusCode::OK, json!({
-                    "id":1234, "number":7, "title":"Fixture issue", "body":TOKEN, "state":"open",
-                    "repository_url":"https://api.github.com/repos/Example/Project",
-                    "html_url":"https://github.com/Example/Project/issues/7",
-                    "labels":[{"name":"excluded"}],
-                })),
+                "/repos/Example/Project/issues/8" => {
+                    if current == 7 {
+                        fixture_second.notify_one();
+                        fixture_release.notified().await;
+                    }
+                    reply(
+                        StatusCode::OK,
+                        json!({
+                            "id":1235, "number":8, "title":"Linked issue",
+                            "body":"Additional fixture details", "state":"closed",
+                            "repository_url":"https://api.github.com/repos/Example/Project",
+                            "html_url":"https://github.com/Example/Project/issues/8",
+                        }),
+                    )
+                }
                 _ => panic!("unexpected fixture endpoint"),
             }
         }
@@ -590,6 +628,43 @@ async fn github_issue_plugin_uses_the_selected_account_and_public_repository() {
     let grants = format!("/session/{session}/plugins");
     let plugin = format!("{grants}/{PLUGIN}");
     let read = format!("{plugin}/github-issue");
+    let code = format!("{read}/code");
+    let script = json!({"code": r"
+        const first = github.issue.read(7);
+        const next = Number(first.body.match(/#(\d+)/)[1]);
+        return [first, github.issue.read(next)].map(({number, title, state}) =>
+            ({number, title, state}));
+    "});
+    let mut opted_in = enable.clone();
+    opted_in["code_mode"] = json!(true);
+    let scratch = root.0.join("plugin-scratch");
+    assert!(!scratch.exists());
+    let enabled = request(&companion, "POST", &grants, opted_in.clone()).await;
+    assert_eq!(enabled.status(), StatusCode::CREATED);
+    assert_eq!(body(enabled).await["code_mode"], true);
+    let first_run = request(
+        &companion,
+        "POST",
+        &code,
+        json!({"code":
+            "return [typeof fetch, typeof require, typeof process, typeof std, typeof os];"
+        }),
+    )
+    .await;
+    let status = first_run.status();
+    let first_run = body(first_run).await;
+    assert_eq!(status, StatusCode::OK, "{first_run}");
+    assert_eq!(first_run["result"], json!(vec!["undefined"; 5]));
+    assert_eq!(first_run["calls"], 0);
+    assert_eq!(calls.load(Ordering::Acquire), 0);
+    hypermesh_local_storage::check_dir(&scratch).unwrap();
+    assert_eq!(
+        request(&companion, "DELETE", &plugin, Value::Null)
+            .await
+            .status(),
+        StatusCode::NO_CONTENT
+    );
+
     assert_eq!(
         request(&companion, "POST", &grants, enable.clone())
             .await
@@ -607,6 +682,12 @@ async fn github_issue_plugin_uses_the_selected_account_and_public_repository() {
 
     let call = json!({"target":target,"number":7});
     assert_eq!(
+        request(&companion, "POST", &code, script.clone())
+            .await
+            .status(),
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
         request(&regular, "POST", &read, call.clone())
             .await
             .status(),
@@ -622,7 +703,7 @@ async fn github_issue_plugin_uses_the_selected_account_and_public_repository() {
     assert_eq!(
         result,
         json!({"result":{
-            "id":1234,"number":7,"title":"Fixture issue","state":"open","body":"[redacted]",
+            "id":1234,"number":7,"title":"Fixture issue","state":"open","body":"[redacted] see #8",
             "url":"https://github.com/Example/Project/issues/7",
         }})
     );
@@ -687,7 +768,9 @@ async fn github_issue_plugin_uses_the_selected_account_and_public_repository() {
     assert_eq!(calls.load(Ordering::Acquire), before);
 
     assert_eq!(
-        request(&companion, "POST", &grants, enable).await.status(),
+        request(&companion, "POST", &grants, enable.clone())
+            .await
+            .status(),
         StatusCode::CREATED
     );
     assert_eq!(
@@ -697,9 +780,157 @@ async fn github_issue_plugin_uses_the_selected_account_and_public_repository() {
         StatusCode::NO_CONTENT
     );
     assert_eq!(
-        request(&companion, "POST", &read, call).await.status(),
+        request(&companion, "POST", &read, call.clone())
+            .await
+            .status(),
         StatusCode::NOT_FOUND
     );
     assert_eq!(calls.load(Ordering::Acquire), before);
+
+    mode.store(0, Ordering::Release);
+    let enabled = request(&companion, "POST", &grants, opted_in).await;
+    assert_eq!(enabled.status(), StatusCode::CREATED);
+    assert_eq!(body(enabled).await["code_mode"], true);
+    assert_eq!(
+        request(&regular, "POST", &code, script.clone())
+            .await
+            .status(),
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(calls.load(Ordering::Acquire), before);
+
+    let direct_started = Instant::now();
+    let first = request(&companion, "POST", &read, call).await;
+    assert_eq!(first.status(), StatusCode::OK);
+    let first = body(first).await;
+    let linked = first["result"]["body"]
+        .as_str()
+        .unwrap()
+        .rsplit_once('#')
+        .unwrap()
+        .1;
+    let second = request(
+        &companion,
+        "POST",
+        &read,
+        json!({"target": target, "number": linked.parse::<u64>().unwrap()}),
+    )
+    .await;
+    assert_eq!(second.status(), StatusCode::OK);
+    let second = body(second).await;
+    let direct_elapsed = direct_started.elapsed();
+    assert_eq!(calls.load(Ordering::Acquire) - before, 6);
+    let expected: Vec<_> = [&first, &second]
+        .into_iter()
+        .map(|row| {
+            let issue = &row["result"];
+            json!({"number":issue["number"], "title":issue["title"], "state":issue["state"]})
+        })
+        .collect();
+
+    let code_started = Instant::now();
+    let composed = request(&companion, "POST", &code, script.clone()).await;
+    let status = composed.status();
+    let composed = body(composed).await;
+    assert_eq!(status, StatusCode::OK, "{composed}");
+    let code_elapsed = code_started.elapsed();
+    assert_eq!(composed["result"], json!(expected));
+    assert_eq!(composed["calls"], 2);
+    assert_eq!(calls.load(Ordering::Acquire) - before, 12);
+    let direct_bytes = first["result"].to_string().len() + second["result"].to_string().len();
+    let code_bytes = composed["result"].to_string().len();
+    println!(
+        "GitHub fixture comparison (no model provider): direct tool turns=2, response bytes={direct_bytes}, \
+         approximate response tokens={}, elapsed_ms={}; Code Mode tool turns=1, response bytes={code_bytes}, \
+         approximate response tokens={}, elapsed_ms={}",
+        direct_bytes.div_ceil(4), direct_elapsed.as_millis(),
+        code_bytes.div_ceil(4), code_elapsed.as_millis(),
+    );
+    let audit = body(request(&companion, "GET", &code, Value::Null).await).await;
+    assert_eq!(
+        audit["calls"],
+        json!([
+            {"run_id": composed["run_id"], "call":1, "tool":"github.issue.read", "outcome":"ok"},
+            {"run_id": composed["run_id"], "call":2, "tool":"github.issue.read", "outcome":"ok"},
+        ])
+    );
+
+    let before = calls.load(Ordering::Acquire);
+    for script in [
+        "return github.issue.read('7');",
+        "return 'x'.repeat(17_000);",
+        "return Promise.resolve([]);",
+    ] {
+        let rejected = request(&companion, "POST", &code, json!({"code": script})).await;
+        assert_eq!(rejected.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(
+            body(rejected).await["error"]["code"],
+            "code_mode_script_error"
+        );
+    }
+    assert_eq!(calls.load(Ordering::Acquire), before);
+
+    let over_budget = request(
+        &companion,
+        "POST",
+        &code,
+        json!({
+            "code":"for (let i = 0; i < 5; i++) github.issue.read(7); return null;"
+        }),
+    )
+    .await;
+    assert_eq!(over_budget.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(
+        body(over_budget).await["error"]["code"],
+        "code_mode_read_limit"
+    );
+    assert_eq!(calls.load(Ordering::Acquire) - before, 12);
+
+    let before = calls.load(Ordering::Acquire);
+    mode.store(5, Ordering::Release);
+    let changed_account = request(&companion, "POST", &code, script).await;
+    assert_eq!(changed_account.status(), StatusCode::FORBIDDEN);
+    let changed_account = body(changed_account).await;
+    assert!(changed_account.get("result").is_none());
+    assert_eq!(changed_account["error"]["code"], "github_issue_refused");
+    assert_eq!(calls.load(Ordering::Acquire) - before, 4);
+
+    let before = calls.load(Ordering::Acquire);
+    mode.store(7, Ordering::Release);
+    let running = {
+        let companion = companion.clone();
+        let code = code.clone();
+        tokio::spawn(async move {
+            request(
+                &companion,
+                "POST",
+                &code,
+                json!({"code":
+                    "github.issue.read(7); github.issue.read(8); return github.issue.read(7);"
+                }),
+            )
+            .await
+        })
+    };
+    tokio::time::timeout(Duration::from_secs(6), second_read.notified())
+        .await
+        .unwrap();
+    assert_eq!(
+        request(&companion, "DELETE", &plugin, Value::Null)
+            .await
+            .status(),
+        StatusCode::NO_CONTENT
+    );
+    release_second.notify_one();
+    let cancelled = running.await.unwrap();
+    assert!(!cancelled.status().is_success());
+    assert!(body(cancelled).await.get("result").is_none());
+    assert_eq!(calls.load(Ordering::Acquire) - before, 6);
+    let audit = body(request(&companion, "GET", &code, Value::Null).await).await;
+    let rows = audit["calls"].as_array().unwrap();
+    assert!(rows.iter().any(|row| row["outcome"] == "denied"));
+    assert!(rows.iter().any(|row| row["outcome"] == "cancelled"));
+    assert!(!audit.to_string().contains(TOKEN));
+    assert!(!audit.to_string().contains("Fixture issue"));
     fixture.abort();
 }

@@ -311,6 +311,7 @@ impl Package {
 pub(crate) struct Grant {
     pub package: Package,
     pub target: Target,
+    pub code_mode: bool,
     ended: AtomicBool,
     running: AtomicBool,
 }
@@ -345,17 +346,22 @@ impl Grants {
         session: Uuid,
         package: Package,
         target: Target,
+        code_mode: bool,
     ) -> Option<Value> {
         let key = (session, package.key().to_owned());
         if self.0.len() >= MAX_GRANTS || self.0.contains_key(&key) {
             return None;
         }
-        let metadata = package.metadata();
+        let mut metadata = package.metadata();
+        if code_mode {
+            metadata["code_mode"] = json!(true);
+        }
         self.0.insert(
             key,
             Arc::new(Grant {
                 package,
                 target,
+                code_mode,
                 ended: AtomicBool::new(false),
                 running: AtomicBool::new(false),
             }),
@@ -449,7 +455,7 @@ fn stage_file(staging: &Path, bytes: &[u8]) -> Result<Staged, Error> {
     Ok(staged)
 }
 
-struct Staged(std::path::PathBuf);
+pub(crate) struct Staged(std::path::PathBuf);
 impl Drop for Staged {
     fn drop(&mut self) {
         let _ = fs::remove_file(&self.0);

@@ -1,9 +1,9 @@
 //! Native request contract against the immutable first animal-pack catalog.
 
 use std::cell::Cell;
-use std::fs::{self, File};
-use std::io::Read;
+use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use serde_json::{json, Map, Value};
@@ -12,25 +12,35 @@ use super::{catalog, packs, request_from, storage, MAX_RESPONSE_BYTES};
 
 const SOURCE: &str = "12e6bc4dcf8a7daa8a079f409865a7e03510040a";
 const ASSETS: &str = "16e0a37d2e287a8766452355fad1742c2389d2b1";
+const FIXTURE: &str = "8940a44fb026224b563b0a732fbc69920f54dc4b";
 
 fn read_fixture(root: &Path, path: &str, limit: usize) -> Result<Vec<u8>, String> {
-    let asset_path = if path == "catalog/catalog.json" {
-        root.join("catalog.json")
+    let git_path = if path == "catalog/catalog.json" {
+        "catalog.json"
     } else {
-        let name = path
-            .strip_prefix(ASSETS)
-            .and_then(|path| path.strip_prefix("/packs/"))
-            .ok_or_else(|| format!("unexpected fixture request: {path}"))?;
-        root.join("packs").join(name)
+        path.strip_prefix(ASSETS)
+            .and_then(|path| path.strip_prefix('/'))
+            .filter(|path| path.starts_with("packs/"))
+            .ok_or_else(|| format!("unexpected fixture request: {path}"))?
     };
-    let mut bytes = Vec::new();
-    File::open(&asset_path)
-        .and_then(|file| file.take(limit as u64 + 1).read_to_end(&mut bytes))
-        .map_err(|error| format!("reading {}: {error}", asset_path.display()))?;
-    if bytes.len() > limit {
+    // The HTTP publisher serves Git blobs. Checkout filters can add a CR on
+    // Windows and change the size and digest of the JSON archives.
+    let blob = Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(["cat-file", "blob", &format!("{FIXTURE}:{git_path}")])
+        .output()
+        .map_err(|error| format!("reading catalog blob {git_path}: {error}"))?;
+    if !blob.status.success() {
+        return Err(format!(
+            "catalog blob {git_path}: {}",
+            String::from_utf8_lossy(&blob.stderr)
+        ));
+    }
+    if blob.stdout.len() > limit {
         return Err(format!("fixture response exceeds the limit: {path}"));
     }
-    Ok(bytes)
+    Ok(blob.stdout)
 }
 
 struct TempConfig(PathBuf);
@@ -112,10 +122,13 @@ fn published_packs_native_contract() {
         if id == "ember-cat" {
             let mut wrong_digest = entry.clone();
             wrong_digest["archive"]["sha256"] = json!("0".repeat(64));
-            assert!(install(&wrong_digest)["error"]
-                .as_str()
-                .unwrap()
-                .contains("SHA-256"));
+            let rejected = install(&wrong_digest);
+            assert!(
+                rejected["error"]
+                    .as_str()
+                    .is_some_and(|error| error.contains("SHA-256")),
+                "{rejected}"
+            );
             assert!(!config.0.join("companion-packs").join(id).exists());
         }
         assert_eq!(install(entry)["changed"], true);

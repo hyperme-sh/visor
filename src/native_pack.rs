@@ -49,11 +49,16 @@ struct CursorSample {
 }
 
 pub(crate) fn request(config: &Path, input: Value) -> Value {
+    request_from(config, input, &catalog::CatalogSource::GITHUB)
+}
+
+fn request_from(config: &Path, input: Value, source: &catalog::CatalogSource<'_>) -> Value {
     if input["action"]
         .as_str()
         .is_some_and(|action| action.starts_with("pack-catalog-"))
     {
-        let body = community_request(config, input).unwrap_or_else(|error| json!({"error":error}));
+        let body =
+            community_request(config, input, source).unwrap_or_else(|error| json!({"error":error}));
         return json!({"status":200,"body":body});
     }
     let Ok(input) = serde_json::from_value::<Request>(input) else {
@@ -86,17 +91,21 @@ enum CommunityRequest {
     Remove { id: String },
 }
 
-fn community_request(config: &Path, input: Value) -> Result<Value, String> {
+fn community_request(
+    config: &Path,
+    input: Value,
+    source: &catalog::CatalogSource<'_>,
+) -> Result<Value, String> {
     match serde_json::from_value::<CommunityRequest>(input)
         .map_err(|_| "Invalid catalog selection.")?
     {
-        CommunityRequest::List => Ok(json!(catalog::Catalog::fetch(config)?)),
+        CommunityRequest::List => Ok(json!(catalog::Catalog::fetch_from(config, source)?)),
         CommunityRequest::Preview {
             entry,
             revision,
             medium,
         } => {
-            let bytes = entry.preview(&revision, medium)?;
+            let bytes = entry.preview_from(&revision, medium, source)?;
             Ok(json!({"media":base64::engine::general_purpose::STANDARD.encode(bytes)}))
         }
         CommunityRequest::Install {
@@ -104,7 +113,7 @@ fn community_request(config: &Path, input: Value) -> Result<Value, String> {
             revision,
             replace,
         } => {
-            entry.install(config, &revision, replace)?;
+            entry.install_from(config, &revision, replace, source)?;
             Ok(json!({"changed":true}))
         }
         CommunityRequest::Remove { id } => {
@@ -377,6 +386,10 @@ fn png(image: Png, size: (u32, u32)) -> Option<String> {
 fn wav(wave: PcmWave) -> String {
     base64::engine::general_purpose::STANDARD.encode(wave.wave_bytes())
 }
+
+#[cfg(test)]
+#[path = "companion_catalog_contract.rs"]
+mod published_contract;
 
 #[cfg(test)]
 mod tests {

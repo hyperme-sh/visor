@@ -896,6 +896,9 @@ func selfTest() throws {
                 try selfTest()
                 #if EMBEDDED_ENGINE
                 _ = NSApplication.shared
+                if let responsePath = ProcessInfo.processInfo.environment["HYPERMESH_CATALOG_CONTRACT_OUTPUT"] {
+                    try NativeCommunityPacks.checkContract(responsePath)
+                }
                 try NativeFeedbackController.checkContracts()
                 try verifyNativeUnit(nativePackFrameIndex(count: 2, interval: 40, loop: true, elapsed: 80, reduced: false) == 0)
                 try verifyNativeUnit(nativePackFrameIndex(count: 2, interval: 40, loop: false, elapsed: 80, reduced: false) == 1)
@@ -910,7 +913,7 @@ func selfTest() throws {
                 } catch NativeError.denied { }
                 precondition(delivered == [1])
                 print("PASS cancellation checkpoint prevents later events without posting input")
-            } catch { exit(1) }
+            } catch { print("Native companion contract failed: \(error)"); exit(1) }
             return
         }
         if arguments == ["--setup"] || (arguments.isEmpty && Bundle.main.bundleIdentifier == "sh.hyperme.visor.development") {

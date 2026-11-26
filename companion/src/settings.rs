@@ -23,6 +23,34 @@ pub fn companion_path(dir: &Path) -> std::path::PathBuf {
     dir.join("companion.toml")
 }
 
+pub struct Presentation {
+    pub appearance: Option<String>,
+    pub voice: Option<String>,
+    pub mood: Option<String>,
+    pub vibe: Option<String>,
+}
+
+pub fn presentation(dir: &Path) -> Presentation {
+    let config = table(dir);
+    let setting = |key| match config.get(key) {
+        Some(Value::String(value)) if !value.is_empty() && value.len() <= 128 => {
+            Some(value.clone())
+        }
+        Some(Value::String(value)) if value.is_empty() => None,
+        Some(_) => {
+            warn_invalid(key, "expected a string of up to 128 UTF-8 bytes");
+            None
+        }
+        None => None,
+    };
+    Presentation {
+        appearance: setting("appearance_pack"),
+        voice: setting("voice_pack"),
+        mood: setting("mood"),
+        vibe: setting("vibe"),
+    }
+}
+
 /// Pupils track the pointer only when this is true. Missing file means off.
 pub fn eyes_follow_pointer(dir: &Path) -> bool {
     read_bool(dir, EYES, false)

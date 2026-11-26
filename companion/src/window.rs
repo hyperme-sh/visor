@@ -23,8 +23,10 @@ use crate::draw::{self, Action, Scene, Sprites};
 use crate::mascot::{self, Mascot, Reel};
 use crate::pages;
 use crate::pointer::{self, BugCursor, LiveInput, Watch};
+use crate::presentation::{Pack, Signals};
 use crate::settings;
 use crate::visor::Poller;
+use crate::voice::Voice;
 
 static STOP: AtomicBool = AtomicBool::new(false);
 
@@ -34,6 +36,8 @@ extern "C" fn on_stop(_: i32) {
 
 struct App {
     sprites: Sprites,
+    voice: Voice,
+    presentation: settings::Presentation,
     pose: Pose,
     menu: bool,
     compact: bool,
@@ -87,9 +91,31 @@ pub fn run() -> Result<(), String> {
         return Ok(());
     }
     let config = credentials::config_dir();
+    let presentation = settings::presentation(&config);
+    let load_pack = |setting, id: Option<&str>| {
+        let id = id?;
+        match Pack::load(&config, id) {
+            Ok(pack) => Some(pack),
+            Err(error) => {
+                eprintln!("hypermesh-companion: {setting}: {error}; using the default");
+                None
+            }
+        }
+    };
+    let appearance = load_pack("appearance_pack", presentation.appearance.as_deref());
     let sprites = Sprites::load();
+    let art = pointer::Art::load();
+    let (sprites, art) = match appearance {
+        Some(pack) => (sprites.with_pack(&pack), art.with_pack(&pack)),
+        None => (sprites, art),
+    };
+    let voice = load_pack("voice_pack", presentation.voice.as_deref())
+        .as_ref()
+        .map_or_else(Voice::silent, Voice::load);
     let app = App {
         sprites,
+        voice,
+        presentation,
         pose: Pose::Idle,
         menu: false,
         compact: settings::compact_mode(&config),
@@ -130,10 +156,10 @@ pub fn run() -> Result<(), String> {
         notice: settings::NoticeCache::default(),
         fallback_sample: None,
     };
-    show(app)
+    show(app, art)
 }
 
-fn show(mut app: App) -> Result<(), String> {
+fn show(mut app: App, art: pointer::Art) -> Result<(), String> {
     let (conn, screen_num) = x11rb::connect(None).map_err(|err| err.to_string())?;
     let screen = &conn.setup().roots[screen_num];
     let root = screen.root;
@@ -142,6 +168,13 @@ fn show(mut app: App) -> Result<(), String> {
     conn.create_colormap(ColormapAlloc::NONE, colormap, root, visual_id)
         .map_err(|err| err.to_string())?;
     let window = conn.generate_id().map_err(|err| err.to_string())?;
+    app.sprites.select(&Signals::new(
+        Mascot::Disconnected,
+        false,
+        &app.pose,
+        None,
+        None,
+    ));
     let status = app.status.lock().unwrap().clone();
     let mut scene = if app.compact {
         draw::render_compact(
@@ -226,7 +259,6 @@ fn show(mut app: App) -> Result<(), String> {
     let lsb = conn.setup().image_byte_order == ImageOrder::LSB_FIRST;
     let mut size = (scene.width, scene.height);
     let mut watch = Watch::attach(&conn, root);
-    let art = pointer::Art::load();
     let mut guard = CursorGuard {
         conn: &conn,
         cursor: BugCursor::new(root, window, depth, visual_id, colormap, red, green, blue),
@@ -467,7 +499,26 @@ fn show(mut app: App) -> Result<(), String> {
         // its mtime changes.
         let upgrading_file = app.notice.current(&app.config, Instant::now());
         let mascot = mascot_now(&app, &snap, upgrading_file);
-        app.reel.set_state(mascot);
+        if snap.connected {
+            app.session_id = snap.session_id.clone();
+            app.pose = snap.pose.clone();
+        } else {
+            app.session_id = None;
+            app.pose = Pose::Idle;
+        }
+        let signals = Signals::new(
+            mascot,
+            app.machine.phase() == Phase::Paused,
+            &app.pose,
+            app.presentation.mood.as_deref(),
+            app.presentation.vibe.as_deref(),
+        );
+        if app.sprites.select(&signals) {
+            app.reel = Reel::new(mascot);
+        } else {
+            app.reel.set_state(mascot);
+        }
+        app.voice.update(&signals);
         let (frame_ms, count, looped) = app.sprites.timing(mascot);
         app.reel.advance(dt, frame_ms, count, looped);
         let status = display_status(&app);
@@ -616,7 +667,7 @@ fn mascot_now(app: &App, snap: &Snapshot, upgrading_file: bool) -> Mascot {
 
 fn display_status(app: &App) -> String {
     if app.machine.phase() == Phase::Paused {
-        return "Paused. Click the bug to continue.".into();
+        return "Paused. Click the companion to continue.".into();
     }
     app.status.lock().unwrap().clone()
 }
@@ -631,16 +682,6 @@ fn sync_cursor(
     now_ms: u64,
     sample_age_ms: u64,
 ) -> Result<(), String> {
-    app.session_id = if snap.connected {
-        snap.session_id.clone()
-    } else {
-        None
-    };
-    app.pose = if snap.connected {
-        snap.pose.clone()
-    } else {
-        Pose::Idle
-    };
     let opt_in = app.bug_cursor && snap.connected;
     let motion = if app.machine.phase() == Phase::Running {
         snap.drive.as_ref().map(|drive| Motion {

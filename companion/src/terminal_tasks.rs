@@ -9,30 +9,50 @@ use uuid::Uuid;
 mod input;
 
 const ENDPOINT: &str = "/terminal-task";
-const USAGE: &str = "Usage: hypermesh-companion --terminal-task WORKSPACE context | run REVISION | watch ID [CURSOR] | interact ID [CURSOR] [--take-over] | cancel ID | request";
+const USAGE: &str = "Usage: hypermesh-companion --terminal-task WORKSPACE [--host DEVICE_ID] context | run REVISION | watch ID [CURSOR] | interact ID [CURSOR] [--take-over] | cancel ID | request";
 
-fn exchange(workspace: &str, operation: Value) -> Result<Value, String> {
-    let distro = wsl_distro()?;
-    let context = operation["type"] == "context";
-    let mut body = json!({"workspace":workspace,"operation":operation});
-    if let Some(distro) = distro {
-        body["wsl_distro"] = json!(distro);
+struct Connection<'a> {
+    workspace: &'a str,
+    device: Option<Uuid>,
+}
+
+impl Connection<'_> {
+    fn exchange(&self, operation: Value) -> Result<Value, String> {
+        let workspace = self.workspace;
+        let distro = wsl_distro()?;
+        let context = operation["type"] == "context";
+        let mut body = json!({"workspace":workspace,"operation":operation});
+        if let Some(distro) = distro {
+            body["wsl_distro"] = json!(distro);
+        }
+        if let Some(device) = self.device {
+            body["expected_device_id"] = json!(device);
+        }
+        let reply =
+            crate::visor::trust_request(ENDPOINT, Some(body)).map_err(|error| match distro {
+                Some(distro) => {
+                    format!("Visor workspace {workspace} in WSL {distro} unavailable. {error}")
+                }
+                None => error,
+            })?;
+        if context
+            && (distro.is_some() || self.device.is_some())
+            && reply["workspace"].as_str() != Some(workspace)
+        {
+            return Err("Visor reported a different workspace".into());
+        }
+        if context && distro.is_some() && reply["wsl_distro"].as_str() != distro {
+            return Err("Visor reported a different WSL distribution".into());
+        }
+        if context
+            && self
+                .device
+                .is_some_and(|device| reply["device_id"] != json!(device))
+        {
+            return Err("Visor reported a different enrolled device".into());
+        }
+        Ok(reply)
     }
-    let reply =
-        crate::visor::trust_request(ENDPOINT, Some(body)).map_err(|error| match distro {
-            Some(distro) => {
-                format!("Visor workspace {workspace} in WSL {distro} unavailable. {error}")
-            }
-            None => error,
-        })?;
-    if context
-        && distro.is_some()
-        && (reply["wsl_distro"].as_str() != distro
-            || reply["workspace"].as_str() != Some(workspace))
-    {
-        return Err("Visor reported a different WSL distribution or workspace".into());
-    }
-    Ok(reply)
 }
 
 fn action(scope: &Value, kind: &str, id: Uuid) -> Value {
@@ -71,7 +91,7 @@ impl OutputDecoder {
 }
 
 fn watch(
-    workspace: &str,
+    connection: &Connection<'_>,
     scope: &Value,
     id: Uuid,
     mut cursor: u64,
@@ -83,7 +103,7 @@ fn watch(
     loop {
         let mut request = action(scope, "read", id);
         request["cursor"] = json!(cursor);
-        let page = exchange(workspace, request)?;
+        let page = connection.exchange(request)?;
         cursor = page["cursor"]
             .as_u64()
             .ok_or("Invalid terminal task cursor")?;
@@ -148,7 +168,20 @@ fn watch(
 }
 
 pub(crate) fn run(args: Vec<String>) -> Result<bool, String> {
-    let [workspace, command, rest @ ..] = args.as_slice() else {
+    let [workspace, tail @ ..] = args.as_slice() else {
+        return Err(USAGE.into());
+    };
+    let (device, tail) = match tail {
+        [flag, id, rest @ ..] if flag == "--host" => {
+            let id = Uuid::parse_str(id).map_err(|_| "Invalid enrolled device ID")?;
+            if id.is_nil() {
+                return Err("Invalid enrolled device ID".into());
+            }
+            (Some(id), rest)
+        }
+        tail => (None, tail),
+    };
+    let [command, rest @ ..] = tail else {
         return Err(USAGE.into());
     };
     if wsl_distro()?.is_some() && !wsl_linux_path(workspace) {
@@ -156,6 +189,7 @@ pub(crate) fn run(args: Vec<String>) -> Result<bool, String> {
     }
     let workspace = std::fs::canonicalize(workspace).map_err(|_| "Local workspace unavailable")?;
     let workspace = workspace.to_str().ok_or("Invalid workspace path")?;
+    let connection = Connection { workspace, device };
     match (command.as_str(), rest) {
         ("request", []) => {
             let mut input = Vec::new();
@@ -168,11 +202,11 @@ pub(crate) fn run(args: Vec<String>) -> Result<bool, String> {
             }
             let operation =
                 serde_json::from_slice(&input).map_err(|_| "Invalid terminal request")?;
-            println!("{}", exchange(workspace, operation)?);
+            println!("{}", connection.exchange(operation)?);
         }
-        ("context", []) => println!("{}", exchange(workspace, json!({"type":"context"}))?),
+        ("context", []) => println!("{}", connection.exchange(json!({"type":"context"}))?),
         ("run", [revision]) => {
-            let scope = exchange(workspace, json!({"type":"context"}))?;
+            let scope = connection.exchange(json!({"type":"context"}))?;
             if scope["task"]["revision"].as_str() != Some(revision) {
                 return Err("Review the current terminal task with context before starting".into());
             }
@@ -180,8 +214,8 @@ pub(crate) fn run(args: Vec<String>) -> Result<bool, String> {
             eprintln!("Task {id}");
             let mut request = action(&scope, "start", id);
             request["revision"] = json!(revision);
-            exchange(workspace, request)?;
-            return watch(workspace, &scope, id, 0, None);
+            connection.exchange(request)?;
+            return watch(&connection, &scope, id, 0, None);
         }
         ("interact", [id, options @ ..]) => {
             let id = Uuid::parse_str(id).map_err(|_| "Invalid task ID")?;
@@ -194,23 +228,23 @@ pub(crate) fn run(args: Vec<String>) -> Result<bool, String> {
                 [value] => value.parse().map_err(|_| "Invalid output cursor")?,
                 _ => return Err(USAGE.into()),
             };
-            let scope = exchange(workspace, json!({"type":"context"}))?;
-            return input::attach(workspace, &scope, id, cursor, take_over);
+            let scope = connection.exchange(json!({"type":"context"}))?;
+            return input::attach(&connection, &scope, id, cursor, take_over);
         }
         ("watch" | "cancel", [id, ..])
             if rest.len() == 1 || command == "watch" && rest.len() == 2 =>
         {
             let id = Uuid::parse_str(id).map_err(|_| "Invalid task ID")?;
-            let scope = exchange(workspace, json!({"type":"context"}))?;
+            let scope = connection.exchange(json!({"type":"context"}))?;
             if command == "watch" {
                 let cursor = rest
                     .get(1)
                     .map(|v| v.parse().map_err(|_| "Invalid cursor"))
                     .transpose()?
                     .unwrap_or(0);
-                return watch(workspace, &scope, id, cursor, None);
+                return watch(&connection, &scope, id, cursor, None);
             }
-            println!("{}", exchange(workspace, action(&scope, "cancel", id))?);
+            println!("{}", connection.exchange(action(&scope, "cancel", id))?);
         }
         _ => return Err(USAGE.into()),
     }

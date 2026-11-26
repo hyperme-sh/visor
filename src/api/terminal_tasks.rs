@@ -105,6 +105,7 @@ fn declaration(dir: &std::path::Path, workspace: &str) -> Result<Option<Declarat
 pub(super) struct RequestBody {
     workspace: String,
     wsl_distro: Option<String>,
+    expected_device_id: Option<Uuid>,
     operation: Operation,
 }
 
@@ -145,6 +146,7 @@ enum Operation {
 #[derive(Clone, PartialEq, Eq)]
 struct Authority {
     session: Uuid,
+    device_id: Uuid,
     binding: String,
 }
 
@@ -183,8 +185,11 @@ pub(super) async fn assigned_context(
 async fn authority(state: &AppState, workspace: &str) -> Result<Authority, ApiError> {
     let (session, value) = assigned_context(state, workspace).await?;
     let identity = acp_machine::context_view(&value, session);
+    let device_id = serde_json::from_value(value["identity"]["device_id"].clone())
+        .map_err(|_| ApiError::forbidden("Assigned host identity required"))?;
     Ok(Authority {
         session,
+        device_id,
         binding: format!("{:x}", Sha256::digest(identity.to_string())),
     })
 }
@@ -281,6 +286,9 @@ pub(super) async fn exchange(
     let distro = crate::workspace_runtime::wsl_distro().map_err(ApiError::unavailable)?;
     validate_wsl_workspace(&body.workspace, body.wsl_distro.as_deref(), distro)?;
     let authority = authority(&state, &body.workspace).await?;
+    if body.expected_device_id.is_some_and(|device| device != authority.device_id) {
+        return Err(ApiError::forbidden("Assigned host differs from the selected enrolled device"));
+    }
     let store = &state.terminal_tasks;
     let consent = local_consent(&state, authority.session);
     match body.operation {
@@ -297,7 +305,7 @@ pub(super) async fn exchange(
             });
             let mut context = json!({
                 "boot": store.boot, "workspace": body.workspace, "session": authority.session,
-                "binding": authority.binding, "task": task,
+                "binding": authority.binding, "device_id": authority.device_id, "task": task,
                 "access": if consent.is_some() { "ready" } else { "paused" },
             });
             if let Some(distro) = distro {
@@ -613,12 +621,21 @@ mod tests {
         workspace: &std::path::Path,
         operation: Value,
     ) -> (StatusCode, Value) {
+        call_device(app, workspace, operation, None).await
+    }
+
+    async fn call_device(
+        app: &Router,
+        workspace: &std::path::Path,
+        operation: Value,
+        expected: Option<Uuid>,
+    ) -> (StatusCode, Value) {
         let distro = crate::workspace_runtime::wsl_distro().unwrap();
         trust_test_request(
             app.clone(),
             "POST",
             "/terminal-task",
-            json!({"workspace":workspace,"wsl_distro":distro,"operation":operation}),
+            json!({"workspace":workspace,"wsl_distro":distro,"operation":operation,"expected_device_id":expected}),
         )
         .await
     }
@@ -682,9 +699,10 @@ mod tests {
         fs::create_dir_all(&cwd).unwrap();
         let socket = directory.join("host.sock");
         let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+        let device = Uuid::new_v4();
         let identity = json!({
             "workspace":workspace, "identity":{
-                "session_id":session,"tenant_id":Uuid::new_v4(),"device_id":Uuid::new_v4(),
+                "session_id":session,"tenant_id":Uuid::new_v4(),"device_id":device,
                 "bot_id":Uuid::new_v4(),"assignment_id":Uuid::new_v4(),
                 "organization_id":Uuid::new_v4(),"owner_id":Uuid::new_v4(),
             },
@@ -748,6 +766,20 @@ mod tests {
         let (status, scope) = call(&app, &workspace, json!({"type":"context"})).await;
         assert_eq!(status, StatusCode::OK, "{scope}");
         assert_eq!(scope["task"]["cwd"], json!(cwd));
+        assert_eq!(scope["device_id"], json!(device));
+        let context = json!({"type":"context"});
+        assert_eq!(
+            call_device(&app, &workspace, context.clone(), Some(device)).await,
+            (StatusCode::OK, scope.clone())
+        );
+        assert_eq!(
+            call_device(&app, &workspace, context.clone(), Some(Uuid::new_v4())).await.0,
+            StatusCode::FORBIDDEN
+        );
+        assert_eq!(
+            call_device(&app, &directory, context, Some(device)).await.0,
+            StatusCode::FORBIDDEN
+        );
 
         let id = Uuid::new_v4();
         let base = |kind: &str, id: Uuid| json!({"type":kind,"boot":scope["boot"],"session":session,"binding":scope["binding"],"id":id});
@@ -755,7 +787,11 @@ mod tests {
         start["revision"] = scope["task"]["revision"].clone();
         let (status, cli) = call(&app, &workspace, start.clone()).await;
         assert_eq!(status, StatusCode::OK, "{cli}");
-        let (status, editor) = call(&app, &workspace, start).await;
+        assert_eq!(
+            call_device(&app, &workspace, start.clone(), Some(Uuid::new_v4())).await.0,
+            StatusCode::FORBIDDEN
+        );
+        let (status, editor) = call_device(&app, &workspace, start, Some(device)).await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(cli["id"], editor["id"]);
 
@@ -784,7 +820,11 @@ mod tests {
         );
         assert_eq!(fs::read(cwd.join("launches")).unwrap(), b"x");
         read["cursor"] = finished["cursor"].clone();
-        let (_, attached) = call(&app, &workspace, read.clone()).await;
+        assert_eq!(
+            call_device(&app, &workspace, read.clone(), Some(Uuid::new_v4())).await.0,
+            StatusCode::FORBIDDEN
+        );
+        let (_, attached) = call_device(&app, &workspace, read.clone(), Some(device)).await;
         assert_eq!(attached["id"], finished["id"]);
         assert_eq!(attached["exit_code"], finished["exit_code"]);
         assert_eq!(attached["output_base64"], "");

@@ -53,15 +53,18 @@ def dump(path, value):
     temporary.replace(path)
 
 
-def companion(*args, check=True):
+def companion(*args, check=True, device=None):
+    host = ["--host", device] if device else []
     return subprocess.run(
-        [str(INSTALL / "hypermesh-companion"), "--terminal-task", str(WORKSPACE), *args],
+        [str(INSTALL / "hypermesh-companion"), "--terminal-task", str(WORKSPACE), *host, *args],
         capture_output=True, text=True, check=check, timeout=40,
     )
 
 
 def verify_task(task_id):
-    result = companion("watch", str(uuid.UUID(task_id)))
+    case = json.loads((BASE / "case.json").read_text())
+    device = case.get("device")
+    result = companion("watch", str(uuid.UUID(task_id)), device=device)
     assert result.stdout.strip() == MARKER, result.stdout
     assert "completed" in result.stderr and "exit 0" in result.stderr, result.stderr
     assert (WORKSPACE / "runs").read_text() == "xx", "Expected one task dispatch from each client"
@@ -70,6 +73,8 @@ def verify_task(task_id):
 
 def client():
     assert os.getuid() == USER.pw_uid
+    device = os.environ.get("VISOR_SSH_FIXTURE_DEVICE")
+    tenant = os.environ.get("VISOR_SSH_FIXTURE_TENANT")
     assert os.environ["WSL_DISTRO_NAME"].startswith("VisorCI-")
     assert "microsoft" in os.uname().release.lower(), os.uname().release
     with open(BASE / "config/terminal-task.json", "x",
@@ -99,8 +104,9 @@ def client():
             dump(BASE / "assignment.json", {
                 "workspace": str(WORKSPACE), "identity": {
                     **{key: str(uuid.uuid4()) for key in
-                       ("tenant_id", "device_id", "bot_id", "assignment_id", "organization_id", "owner_id")},
-                    "session_id": session,
+                       ("bot_id", "assignment_id", "organization_id", "owner_id")},
+                    "tenant_id": tenant or str(uuid.uuid4()),
+                    "device_id": device or str(uuid.uuid4()), "session_id": session,
                 },
             })
             request("/companion/sessions", 204, {"session": session})
@@ -109,14 +115,30 @@ def client():
                 "action": "start", "expected_session": session,
                 "expected_epoch": status["automation"]["epoch"],
             })
-            context = json.loads(companion("context").stdout)
+            if device:
+                bridge = Path(os.environ["HYPERMESH_HOST_BRIDGE_SOCKET"])
+                for _ in range(120):
+                    if bridge.is_socket():
+                        break
+                    time.sleep(.15)
+                else:
+                    raise RuntimeError("The enrolled Host bridge is unavailable")
+                settings = Path(USER.pw_dir) / ".vscode-server/data/Machine/settings.json"
+                updated = json.loads(settings.read_text())
+                updated["hypermesh.terminalHostDeviceId"] = device
+                dump(settings, updated)
+                wrong = companion("context", device=str(uuid.uuid4()), check=False)
+                assert wrong.returncode != 0 and not wrong.stdout, "Foreign device must be refused"
+            context = json.loads(companion("context", device=device).stdout)
             assert context["wsl_distro"] == os.environ["WSL_DISTRO_NAME"], context
             assert context["workspace"] == str(WORKSPACE) and context["access"] == "ready", context
-            run = companion("run", context["task"]["revision"])
+            if device:
+                assert context["device_id"] == device, context
+            run = companion("run", context["task"]["revision"], device=device)
             assert run.stdout.strip() == MARKER, run.stdout
             task_id = re.search(r"^Task ([a-f0-9-]{36})$", run.stderr, re.MULTILINE)[1]
             print(f"CLI ran task {task_id} in {context['wsl_distro']} at {WORKSPACE}", flush=True)
-            dump(BASE / "case.json", {"cliTask": task_id, "marker": MARKER, "workspace": str(WORKSPACE)})
+            dump(BASE / "case.json", {"cliTask": task_id, "marker": MARKER, "workspace": str(WORKSPACE), "device": device})
             # Keep the real daemon available for the VS Code window. The Windows
             # job unregisters this distro after the editor and CLI checks.
             while daemon.poll() is None:
@@ -147,17 +169,21 @@ class OwnerHandler(http.server.BaseHTTPRequestHandler):
         pass
 
 
+def client_environment(owner_socket):
+    return {
+        "HOME": USER.pw_dir, "USER": USER.pw_name, "PATH": "/usr/bin:/bin",
+        "WSL_DISTRO_NAME": os.environ["WSL_DISTRO_NAME"],
+        "HYPERMESH_RUNTIME_DIR": str(BASE / "runtime"),
+        "HYPERMESH_CONFIG_DIR": str(BASE / "config"),
+        "HYPERMESH_HOST_BRIDGE_SOCKET": str(owner_socket),
+    }
+
+
 def owner():
     assert os.getuid() == 0
     with socketserver.UnixStreamServer(str(OWNER), OwnerHandler) as server:
         OWNER.chmod(0o666)
-        env = {
-            "HOME": USER.pw_dir, "USER": USER.pw_name, "PATH": "/usr/bin:/bin",
-            "WSL_DISTRO_NAME": os.environ["WSL_DISTRO_NAME"],
-            "HYPERMESH_RUNTIME_DIR": str(BASE / "runtime"),
-            "HYPERMESH_CONFIG_DIR": str(BASE / "config"),
-            "HYPERMESH_HOST_BRIDGE_SOCKET": str(OWNER),
-        }
+        env = client_environment(OWNER)
         with subprocess.Popen([sys.executable, __file__, "client"], env=env,
                               user=USER.pw_uid, group=USER.pw_gid, extra_groups=[]) as child:
             try:
@@ -177,6 +203,13 @@ if __name__ == "__main__":
         assert os.getuid() == USER.pw_uid
         os.environ["HYPERMESH_RUNTIME_DIR"] = str(BASE / "runtime")
         verify_task(sys.argv[2])
+    elif len(sys.argv) == 3 and sys.argv[1] == "verify-revoked":
+        assert os.getuid() == USER.pw_uid
+        os.environ["HYPERMESH_RUNTIME_DIR"] = str(BASE / "runtime")
+        device = json.loads((BASE / "case.json").read_text())["device"]
+        refused = companion("watch", str(uuid.UUID(sys.argv[2])), check=False, device=device)
+        assert refused.returncode != 0 and refused.stdout == "", "Revoked workspace output must be refused"
+        print(f"CLI refused reattachment after revocation for device {device}", flush=True)
     elif not sys.argv[1:]:
         owner()
     else:

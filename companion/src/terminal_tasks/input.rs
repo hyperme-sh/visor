@@ -2,7 +2,7 @@ use super::*;
 use std::io::IsTerminal;
 
 pub(super) fn attach(
-    workspace: &str,
+    connection: &Connection<'_>,
     scope: &Value,
     id: Uuid,
     cursor: u64,
@@ -13,7 +13,7 @@ pub(super) fn attach(
     }
     let mut read = action(scope, "read", id);
     read["cursor"] = json!(cursor);
-    let page = exchange(workspace, read)?;
+    let page = connection.exchange(read)?;
     let terminal = &page["terminal"];
     if terminal["input_available"] != true {
         return Err("This task does not have available interactive input".into());
@@ -29,7 +29,7 @@ pub(super) fn attach(
     let request = |operation| {
         let mut envelope = control.clone();
         envelope["request"] = operation;
-        exchange(workspace, envelope)
+        connection.exchange(envelope)
     };
     let claim = request(
         json!({"type":"claim","owner":owner,"client":"cli","expected_owner":previous["id"]}),
@@ -59,7 +59,7 @@ pub(super) fn attach(
         dimensions: None,
     };
     eprintln!("Input attached to task {id}. Ctrl+] detaches.");
-    let outcome = watch(workspace, scope, id, cursor, Some(&mut input));
+    let outcome = watch(connection, scope, id, cursor, Some(&mut input));
     drop(mode);
     let _ = release();
     eprintln!(

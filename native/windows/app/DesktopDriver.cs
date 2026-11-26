@@ -40,7 +40,8 @@ internal sealed class DesktopDriver
                 if (action == "view")
                 {
                     Rectangle bounds = Bounds();
-                    using Bitmap image = new(bounds.Width, bounds.Height, PixelFormat.Format32bppArgb);
+                    // The desktop is already composited. The screen DC does not supply alpha.
+                    using Bitmap image = new(bounds.Width, bounds.Height, PixelFormat.Format32bppRgb);
                     using (Graphics graphics = Graphics.FromImage(image)) graphics.CopyFromScreen(bounds.Location, Point.Empty, bounds.Size, CopyPixelOperation.SourceCopy);
                     using MemoryStream bytes = new();
                     image.Save(bytes, ImageFormat.Png);

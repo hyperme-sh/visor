@@ -12,6 +12,21 @@ jobs:
     with:
       platforms: '["macos-latest", "macos-15-intel", "windows-latest", "windows-11-arm"]'
 
+  native-windows-desktop-contract:
+    name: Windows capture and input contracts (${{ matrix.runner }})
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [windows-latest, windows-11-arm]
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5
+        with:
+          dotnet-version: '10.0.x'
+      - name: Native desktop fixture contracts
+        run: ./native/windows/test-desktop-contract.ps1
+
   native-windows-engine:
     name: Native Windows desktop (${{ matrix.arch }})
     needs: native-crash-sdk
@@ -36,8 +51,6 @@ jobs:
       - uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5
         with:
           dotnet-version: '10.0.x'
-      - name: Native desktop fixture contracts
-        run: ./native/windows/test-desktop-contract.ps1
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
           go-version: '1.25.x'
@@ -183,7 +196,7 @@ jobs:
 
   native-desktop-downloads:
     name: Verify native desktop downloads
-    needs: [native-windows-engine, native-macos-workspace]
+    needs: [native-windows-desktop-contract, native-windows-engine, native-macos-workspace]
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

@@ -60,13 +60,9 @@ internal static class DesktopContracts
             Require(monitor.Healthy && driver.ApproveLayout(), "Desktop monitor/layout unavailable");
             authority.Grant(authority.Generation, Session);
             Console.WriteLine("STEP capture");
-            JsonElement capture = Request(driver.Perform(Request(new { action = "view", session = Session })));
-            using MemoryStream bytes = new(Convert.FromBase64String(capture.GetProperty("png").GetString()!));
-            using Bitmap image = new(bytes);
             Rectangle bounds = SystemInformation.VirtualScreen;
             Point sample = fixture.PointToScreen(new Point(150, 120));
-            Require(image.Size == bounds.Size, "Capture dimensions differ from the virtual desktop");
-            Require(image.GetPixel(sample.X - bounds.X, sample.Y - bounds.Y).ToArgb() == fixture.BackColor.ToArgb(), "Capture did not contain the fixture window");
+            await CheckCapture(driver, fixture, bounds, sample);
             bool refused = false;
             Console.WriteLine("STEP cross-session refusal");
             try { driver.Perform(Request(new { action = "view", session = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa" })); }
@@ -109,5 +105,24 @@ internal static class DesktopContracts
             // Restore only this fixture's pointer movement; no desktop image is saved.
             SetCursorPos(original.X, original.Y);
         }
+    }
+
+    private static async Task CheckCapture(DesktopDriver driver, Form fixture, Rectangle bounds, Point sample)
+    {
+        JsonElement request = Request(new { action = "view", session = Session });
+        fixture.Refresh();
+        int expected = fixture.BackColor.ToArgb();
+        int actual = 0;
+        for (int attempt = 0; attempt < 5; attempt++)
+        {
+            await Task.Delay(150);
+            JsonElement capture = Request(driver.Perform(request));
+            using MemoryStream bytes = new(Convert.FromBase64String(capture.GetProperty("png").GetString()!));
+            using Bitmap image = new(bytes);
+            Require(image.Size == bounds.Size, "Capture dimensions differ from the virtual desktop");
+            actual = image.GetPixel(sample.X - bounds.X, sample.Y - bounds.Y).ToArgb();
+            if (actual == expected) return;
+        }
+        throw new InvalidOperationException($"Capture did not contain the fixture window (expected {expected:X8}, observed {actual:X8})");
     }
 }

@@ -91,7 +91,7 @@ async function click(selector, label) {
   return true;
 }
 
-async function pick(label) {
+async function pick(label, timeout) {
   await until(label, async () => {
     const { target, focused } = await evaluate(`(() => {
       const input = document.activeElement;
@@ -111,15 +111,15 @@ async function pick(label) {
     const up = focused > target;
     await key(up ? 'ArrowUp' : 'ArrowDown', up ? 'ArrowUp' : 'ArrowDown', up ? 38 : 40);
     return false;
-  });
+  }, timeout);
 }
 
 const quickInputFocused = "document.activeElement instanceof HTMLInputElement && !!document.activeElement.closest('.quick-input-widget')";
-async function palette(label) {
+async function palette(label, timeout) {
   await key('P', 'KeyP', 80, 10); // Ctrl+Shift+P
   await until('Command Palette input', () => evaluate(quickInputFocused));
   await send('Input.insertText', { text: label });
-  await pick(label);
+  await pick(label, timeout);
 }
 
 const terminalBuffers = `[...document.querySelectorAll('.xterm')]
@@ -144,7 +144,16 @@ try {
   await until('the Workspace Trust prompt', () =>
     click('.monaco-dialog-box .monaco-button, .monaco-dialog-box button', 'Yes, I trust the authors'), 60_000);
   const begin = async () => {
-    await palette('Hypermesh: Visor terminal task');
+    await until('the installed Hypermesh command in the WSL window', async () => {
+      try {
+        await palette('Hypermesh: Visor terminal task', 6000);
+        return true;
+      } catch {
+        // A palette opened during remote startup has a stale command list.
+        await key('Escape', 'Escape', 27);
+        return false;
+      }
+    }, 80_000);
     const title = `WSL ${distro} · ${workspace} · access ready`;
     await until('the distro and workspace in the task picker', () => evaluate(
       `document.querySelector('.quick-input-titlebar')?.innerText.includes(${JSON.stringify(title)})`,

@@ -44,7 +44,7 @@ try {
     }
     if (!$case -or $case.workspace -ne $workspace) { throw 'The scoped CLI task did not complete' }
 
-    $codeVersion = '1.145.3'
+    $codeVersion = (Get-Content -LiteralPath 'ci/wsl/vscode-version' -Raw).Trim()
     $zip = Join-Path $fixture 'vscode.zip'
     $url = "https://update.code.visualstudio.com/$codeVersion/win32-x64-archive/stable"
     & curl.exe --fail --silent --show-error --location --retry 3 --max-time 180 $url --output $zip

@@ -53,7 +53,7 @@ pub(super) async fn audit(
 ) -> Result<Response, ApiError> {
     private(link)?;
     let id = parse_id(&id)?;
-    if !state.has_session(id) || plugin_id != "dev.visor.github-issue" {
+    if !state.has_session(id) || plugin_id != plugin::GITHUB_ISSUE_PLUGIN_ID {
         return Err(ApiError::missing());
     }
     let rows = lock(&state.github_code_audit);

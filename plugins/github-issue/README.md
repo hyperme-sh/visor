@@ -5,7 +5,26 @@ package uses the public SDK and the signed distribution format as
 `dev.visor.github-issue`. Inspect the installed publisher and key fingerprint
 before granting access. A local author build has a community publisher.
 
-## Build and install
+## Visor TEST image
+
+The moving `ghcr.io/hyperme-sh/hypermesh-visor:test` image includes a signed
+GitHub issue package on Linux amd64 and arm64. In a fresh container,
+`hypermesh-companion --plugins list` reports `dev.visor.github-issue` with
+`bundled: true`. Use the listed revision to grant access with the commands
+below. Each session still needs its own account and repository grant, and
+Code Mode requires `--code-mode` on that grant.
+
+The image build signs the package with a disposable Ed25519 key and ships
+the signed file at a root-owned path. Visor verifies it before listing or
+granting it. The image owns updates to the bundled package. An existing
+owner-installed package with the same ID retains precedence.
+
+Actual reads need GitHub egress from Visor and a host policy that allows
+Bubblewrap to create its private namespaces. CI checks the shipped file on
+each native image, then exercises it in the sandbox on the disposable native
+runner with a loopback provider fixture and an empty user plugin store.
+
+## Build and install a standalone copy
 
 Build the package from this directory with Rust 1.87 or later and a C compiler.
 Put the executable and manifest in a private package directory. The executable
@@ -36,7 +55,7 @@ in the session vault and is reserved for this broker. Close the session to
 drop it. For the GitHub API and permission details, see
 [Get an issue](https://docs.github.com/en/rest/issues/issues#get-an-issue).
 
-Copy the package revision from the installed list. Supply the numeric GitHub
+Copy the package revision from the plugin list. Supply the numeric GitHub
 user ID and the repository's canonical `OWNER/REPO` spelling. A grant applies
 to that account and repository until revocation, session close, a package
 update, or Visor restart.

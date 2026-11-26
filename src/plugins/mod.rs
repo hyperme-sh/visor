@@ -4,6 +4,8 @@ pub(crate) mod publication;
 pub(crate) mod stdio;
 pub(crate) mod store;
 
+pub(crate) const GITHUB_ISSUE_PLUGIN_ID: &str = "dev.visor.github-issue";
+
 use crate::mcp::schema;
 use hypermesh_local_storage as storage;
 use serde::{Deserialize, Serialize};

@@ -20,6 +20,7 @@ pub(crate) enum Error {
     Changed,
     Missing,
     Disabled,
+    Bundled,
     Storage,
 }
 
@@ -33,6 +34,7 @@ impl Error {
             Self::Changed => "publication_changed",
             Self::Missing => "plugin_missing",
             Self::Disabled => "plugin_disabled",
+            Self::Bundled => "bundled_plugin_immutable",
             Self::Storage => "plugin_store_unavailable",
         }
     }
@@ -48,6 +50,7 @@ impl Error {
             }
             Self::Missing => "The plugin is not installed".into(),
             Self::Disabled => "The installed plugin is disabled".into(),
+            Self::Bundled => "This plugin is supplied by the Visor image".into(),
             Self::Storage => "The private plugin store is unavailable".into(),
         }
     }
@@ -279,6 +282,14 @@ fn seal(
 }
 
 impl Publication {
+    pub(super) fn bundled(archive: Vec<u8>) -> Result<Self, Error> {
+        let publication = Self::verify(archive, None, None, |_, _| Err(Error::Publisher))?;
+        if publication.metadata.id != super::GITHUB_ISSUE_PLUGIN_ID {
+            return Err(Error::Publisher);
+        }
+        Ok(publication)
+    }
+
     pub(crate) fn read(source: &str, expected: Option<&str>) -> Result<Self, Error> {
         let source_path = Path::new(source);
         let (archive, selected_url) = if source.starts_with("https://") {

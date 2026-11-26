@@ -72,6 +72,10 @@ jobs:
     steps:
       - uses: actions/checkout@v7.0.1
       - uses: dtolnay/rust-toolchain@stable
+      - name: Windows companion pack contracts
+        run: |
+          cargo test --locked --lib companion_packs::
+          cargo test --locked --lib native_pack::
       - name: Build native engine DLL
         run: cargo rustc --locked --lib --crate-type cdylib
       - name: Native engine protocol contracts

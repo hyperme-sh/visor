@@ -7,16 +7,12 @@ use std::sync::{mpsc, Arc};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
+use hypermesh_visor::companion_packs::{PcmWave as Cue, MAX_DISTINCT_VOICES};
+
 use crate::presentation::{self, Pack, Signals};
 
-const MAX_WAV_BYTES: usize = 300 * 1024;
 const PLAYER: &str = "/usr/bin/aplay";
 const MIN_INTERVAL: Duration = Duration::from_millis(750);
-
-struct Cue {
-    rate: u32,
-    pcm: Vec<u8>,
-}
 
 pub struct Voice {
     bindings: Vec<(String, Arc<Cue>)>,
@@ -40,11 +36,11 @@ impl Voice {
             let Some(name) = entry.as_ref().and_then(|value| value.as_str()) else {
                 continue;
             };
-            if !presentation::valid_key(key) || (!cues.contains_key(name) && cues.len() >= 16) {
+            if !presentation::valid_key(key) || (!cues.contains_key(name) && cues.len() >= MAX_DISTINCT_VOICES) {
                 continue;
             }
             let cue = cues.entry(name).or_insert_with(|| {
-                let cue = pack.asset(name, ".wav", MAX_WAV_BYTES).ok().and_then(|bytes| decode_wave(&bytes));
+                let cue = pack.voice(name);
                 if cue.is_none() {
                     eprintln!("hypermesh-companion: unusable voice binding {key}; expected a short mono PCM WAV");
                 }
@@ -91,56 +87,6 @@ impl Drop for Voice {
             let _ = worker.join();
         }
     }
-}
-
-fn decode_wave(bytes: &[u8]) -> Option<Cue> {
-    let size = u32_at(bytes, 4)? as usize;
-    if bytes.get(..4)? != b"RIFF"
-        || bytes.get(8..12)? != b"WAVE"
-        || size.checked_add(8)? != bytes.len()
-    {
-        return None;
-    }
-    let mut rate = None;
-    let mut pcm = None;
-    let mut remaining = &bytes[12..];
-    while !remaining.is_empty() {
-        let size = u32_at(remaining, 4)? as usize;
-        let end = 8usize.checked_add(size)?;
-        let chunk = remaining.get(8..end)?;
-        match remaining.get(..4)? {
-            b"fmt " if rate.is_none() => {
-                let sample_rate = u32_at(chunk, 4)?;
-                if !(8_000..=48_000).contains(&sample_rate)
-                    || chunk.get(..4)? != [1, 0, 1, 0]
-                    || u32_at(chunk, 8)? != sample_rate * 2
-                    || chunk.get(12..16)? != [2, 0, 16, 0]
-                {
-                    return None;
-                }
-                rate = Some(sample_rate);
-            }
-            b"data" if pcm.is_none() => pcm = Some(chunk),
-            b"fmt " | b"data" => return None,
-            _ => {}
-        }
-        remaining = remaining.get(end.checked_add(size % 2)?..)?;
-    }
-    let rate = rate?;
-    let pcm = pcm?;
-    if pcm.is_empty() || pcm.len() % 2 != 0 || pcm.len() > rate as usize * 2 * 3 {
-        return None;
-    }
-    Some(Cue {
-        rate,
-        pcm: pcm.to_vec(),
-    })
-}
-
-fn u32_at(bytes: &[u8], start: usize) -> Option<u32> {
-    Some(u32::from_le_bytes(
-        bytes.get(start..start + 4)?.try_into().ok()?,
-    ))
 }
 
 fn play_cues(receive: mpsc::Receiver<Option<Arc<Cue>>>) {
@@ -222,31 +168,5 @@ impl Drop for Playing {
         if let Some(writer) = self.writer.take() {
             let _ = writer.join();
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn accepts_short_mono_wave_and_rejects_bad_headers_and_duration() {
-        let wave = |samples: usize| {
-            let mut bytes = b"RIFF".to_vec();
-            bytes.extend_from_slice(&(36 + samples as u32 * 2).to_le_bytes());
-            bytes.extend_from_slice(b"WAVEfmt \x10\0\0\0\x01\0\x01\0");
-            bytes.extend_from_slice(&16_000u32.to_le_bytes());
-            bytes.extend_from_slice(&32_000u32.to_le_bytes());
-            bytes.extend_from_slice(b"\x02\0\x10\0data");
-            bytes.extend_from_slice(&(samples as u32 * 2).to_le_bytes());
-            bytes.resize(44 + samples * 2, 0);
-            bytes
-        };
-        let mut bytes = wave(20);
-        assert_eq!(decode_wave(&bytes).unwrap().pcm.len(), 40);
-        assert!(decode_wave(&bytes[..bytes.len() - 1]).is_none());
-        bytes[22] = 2;
-        assert!(decode_wave(&bytes).is_none());
-        assert!(decode_wave(&wave(48_001)).is_none());
     }
 }

@@ -74,7 +74,7 @@ private final class PhoneNativeState {
 final class VisorPlugin: CAPPlugin, CAPBridgedPlugin {
     let identifier = "VisorPlugin"
     let jsName = "Visor"
-    let pluginMethods: [CAPPluginMethod] = ["feedbackStatus", "feedbackStart", "feedbackCancel", "feedbackConsent", "feedbackSetConsent", "feedbackPrepare", "feedbackSubmit", "cancelPhone", "ownedSessions", "sendPrompt", "preparePrompt", "submitPrompt", "discardPrompt", "status", "beginSignIn", "finishSignIn", "cancelSignIn", "enroll", "renew", "revoke", "connect", "disconnect"].map {
+    let pluginMethods: [CAPPluginMethod] = ["appInfo", "feedbackStatus", "feedbackStart", "feedbackCancel", "feedbackConsent", "feedbackSetConsent", "feedbackPrepare", "feedbackSubmit", "cancelPhone", "ownedSessions", "sendPrompt", "preparePrompt", "submitPrompt", "discardPrompt", "status", "beginSignIn", "finishSignIn", "cancelSignIn", "enroll", "renew", "revoke", "connect", "disconnect"].map {
         CAPPluginMethod(name: $0, returnType: CAPPluginReturnPromise)!
     }
     private static var shared: PhoneNativeState?
@@ -120,6 +120,14 @@ final class VisorPlugin: CAPPlugin, CAPBridgedPlugin {
         return ["enrolled": current?.enrolled == true && current?.revoked != true,
                 "revoked": current?.revoked == true,
                 "connection": state.tunnel.status(), "canConnect": current?.enrolled == true && current?.revoked != true]
+    }
+    @objc func appInfo(_ call: CAPPluginCall) {
+        guard let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String,
+              let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String else {
+            call.reject("App version is unavailable.")
+            return
+        }
+        call.resolve(["version": version, "build": build])
     }
     @objc func status(_ call: CAPPluginCall) {
         guard let state = native else { call.reject("Phone configuration is unavailable."); return }

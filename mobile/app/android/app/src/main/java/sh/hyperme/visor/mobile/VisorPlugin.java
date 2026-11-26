@@ -1,8 +1,11 @@
 package sh.hyperme.visor.mobile;
 
 import android.content.Intent;
+import android.content.pm.PackageInfo;
+import android.content.pm.PackageManager;
 import android.app.Activity;
 import androidx.activity.result.ActivityResult;
+import androidx.core.content.pm.PackageInfoCompat;
 import com.getcapacitor.annotation.ActivityCallback;
 import android.net.Uri;
 import com.getcapacitor.JSArray;
@@ -88,6 +91,18 @@ public final class VisorPlugin extends Plugin {
         result.put("connection", n.tunnel.status());
         result.put("canConnect", status != null && status.getEnrolled() && !status.getRevoked());
         return result;
+    }
+    @PluginMethod public void appInfo(PluginCall call) {
+        var context = getContext();
+        try {
+            PackageInfo info = context.getPackageManager().getPackageInfo(context.getPackageName(), 0);
+            JSObject result = new JSObject();
+            result.put("version", info.versionName);
+            result.put("build", Long.toString(PackageInfoCompat.getLongVersionCode(info)));
+            call.resolve(result);
+        } catch (PackageManager.NameNotFoundException ignored) {
+            call.reject("App version is unavailable.");
+        }
     }
     @PluginMethod public void feedbackStatus(PluginCall call) {
         JSObject result = new JSObject(); result.put("configured", nativeState != null && nativeState.feedback != null); call.resolve(result);

@@ -22,6 +22,19 @@ const IMAGE_LIMIT: usize = 1024 * 1024;
 const VOICE_LIMIT: usize = 300 * 1024;
 static RECOVERY: Mutex<()> = Mutex::new(());
 
+type ReadAsset<'a> = dyn Fn(&str, usize) -> Result<Vec<u8>, String> + 'a;
+
+/// Reads bounded catalog assets addressed by validated repository-relative paths.
+pub struct CatalogSource<'a>(&'a ReadAsset<'a>);
+
+impl<'a> CatalogSource<'a> {
+    pub const GITHUB: CatalogSource<'static> = CatalogSource(&get);
+
+    pub fn new(read: &'a ReadAsset<'a>) -> Self {
+        Self(read)
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Asset {
@@ -62,7 +75,11 @@ pub enum Preview {
 
 impl Catalog {
     pub fn fetch(config: &Path) -> Result<Self, String> {
-        let bytes = get("catalog/catalog.json", CATALOG_LIMIT)?;
+        Self::fetch_from(config, &CatalogSource::GITHUB)
+    }
+
+    pub fn fetch_from(config: &Path, source: &CatalogSource<'_>) -> Result<Self, String> {
+        let bytes = (source.0)("catalog/catalog.json", CATALOG_LIMIT)?;
         let mut catalog = Self::parse(&bytes)?;
         // A committed install may have been interrupted between moving the old
         // directory aside and publishing the new one.
@@ -122,13 +139,22 @@ impl Entry {
     }
 
     pub fn preview(&self, revision: &str, medium: Preview) -> Result<Vec<u8>, String> {
+        self.preview_from(revision, medium, &CatalogSource::GITHUB)
+    }
+
+    pub fn preview_from(
+        &self,
+        revision: &str,
+        medium: Preview,
+        source: &CatalogSource<'_>,
+    ) -> Result<Vec<u8>, String> {
         self.validate()?;
         let (extension, asset) = match medium {
             Preview::Art => ("png", self.art_preview.as_ref()),
             Preview::Voice => ("wav", self.voice_preview.as_ref()),
         };
         let asset = asset.ok_or("This pack has no preview for that medium.")?;
-        let bytes = self.download(revision, extension, asset)?;
+        let bytes = self.download(revision, extension, asset, source)?;
         match medium {
             Preview::Art => {
                 let image = packs::read_png(&bytes, Some(packs::SPRITE_SIZE))
@@ -144,19 +170,35 @@ impl Entry {
     }
 
     pub fn install(&self, config: &Path, revision: &str, replace: bool) -> Result<(), String> {
+        self.install_from(config, revision, replace, &CatalogSource::GITHUB)
+    }
+
+    pub fn install_from(
+        &self,
+        config: &Path,
+        revision: &str,
+        replace: bool,
+        source: &CatalogSource<'_>,
+    ) -> Result<(), String> {
         self.validate()?;
         if !replace && installed(config, &self.id)? {
             return Err("A local copy already exists. Confirm replacement to continue.".into());
         }
-        let bytes = self.download(revision, "pack.json", &self.archive)?;
+        let bytes = self.download(revision, "pack.json", &self.archive, source)?;
         self.install_bytes(config, &bytes, replace)
     }
 
-    fn download(&self, revision: &str, extension: &str, asset: &Asset) -> Result<Vec<u8>, String> {
+    fn download(
+        &self,
+        revision: &str,
+        extension: &str,
+        asset: &Asset,
+        source: &CatalogSource<'_>,
+    ) -> Result<Vec<u8>, String> {
         if !hex(revision, 40) {
             return Err("Invalid pack revision.".into());
         }
-        let bytes = get(
+        let bytes = (source.0)(
             &format!("{revision}/packs/{}.{extension}", self.id),
             asset.bytes,
         )?;
@@ -197,10 +239,6 @@ impl Asset {
 }
 
 fn get(path: &str, limit: usize) -> Result<Vec<u8>, String> {
-    #[cfg(test)]
-    if let Some(result) = published_contract::read_fixture(path, limit) {
-        return result;
-    }
     let response = ureq::AgentBuilder::new()
         .redirects(0)
         .try_proxy_from_env(false)
@@ -224,10 +262,6 @@ fn get(path: &str, limit: usize) -> Result<Vec<u8>, String> {
     }
     Ok(bytes)
 }
-
-#[cfg(test)]
-#[path = "companion_catalog_contract.rs"]
-mod published_contract;
 
 fn hex(value: &str, size: usize) -> bool {
     value.len() == size

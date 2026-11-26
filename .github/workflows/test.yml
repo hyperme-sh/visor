@@ -104,7 +104,7 @@ jobs:
         env:
           HYPERMESH_CATALOG_FIXTURE: ${{ github.workspace }}/.ci-fixtures/companion-catalog
           HYPERMESH_CATALOG_CONTRACT_OUTPUT: ${{ runner.temp }}/companion-catalog-responses.json
-        run: cargo test --locked --lib companion_catalog::published_contract::published_packs_native_contract -- --ignored --exact
+        run: cargo test --locked --manifest-path ci/native-engine/Cargo.toml native_pack::published_contract::published_packs_native_contract -- --ignored --exact
       - name: Native companion unit contracts (no desktop opened)
         env:
           HYPERMESH_CATALOG_CONTRACT_OUTPUT: ${{ runner.temp }}/companion-catalog-responses.json
@@ -508,7 +508,7 @@ jobs:
         env:
           HYPERMESH_CATALOG_FIXTURE: ${{ github.workspace }}/.ci-fixtures/companion-catalog
           HYPERMESH_CATALOG_CONTRACT_OUTPUT: ${{ runner.temp }}/companion-catalog-responses.json
-        run: cargo test --locked --lib companion_catalog::published_contract::published_packs_native_contract -- --ignored --exact
+        run: cargo test --locked --manifest-path ci/native-engine/Cargo.toml native_pack::published_contract::published_packs_native_contract -- --ignored --exact
       - name: Native event mapping and unauthenticated bridge refusal
         env:
           HYPERMESH_CATALOG_CONTRACT_OUTPUT: ${{ runner.temp }}/companion-catalog-responses.json

@@ -1,47 +1,44 @@
 //! Native request contract against the immutable first animal-pack catalog.
 
-use super::*;
+use std::cell::Cell;
+use std::fs::{self, File};
+use std::io::Read;
+use std::path::{Path, PathBuf};
+
+use base64::{engine::general_purpose::STANDARD, Engine as _};
 use serde_json::{json, Map, Value};
-use std::cell::RefCell;
+
+use super::{catalog, packs, request_from, storage, MAX_RESPONSE_BYTES};
 
 const SOURCE: &str = "12e6bc4dcf8a7daa8a079f409865a7e03510040a";
 const ASSETS: &str = "16e0a37d2e287a8766452355fad1742c2389d2b1";
 
-enum Transport {
-    Network,
-    Fixture(PathBuf),
-    Offline,
+fn read_fixture(root: &Path, path: &str, limit: usize) -> Result<Vec<u8>, String> {
+    let asset_path = if path == "catalog/catalog.json" {
+        root.join("catalog.json")
+    } else {
+        let name = path
+            .strip_prefix(ASSETS)
+            .and_then(|path| path.strip_prefix("/packs/"))
+            .ok_or_else(|| format!("unexpected fixture request: {path}"))?;
+        root.join("packs").join(name)
+    };
+    let mut bytes = Vec::new();
+    File::open(&asset_path)
+        .and_then(|file| file.take(limit as u64 + 1).read_to_end(&mut bytes))
+        .map_err(|error| format!("reading {}: {error}", asset_path.display()))?;
+    if bytes.len() > limit {
+        return Err(format!("fixture response exceeds the limit: {path}"));
+    }
+    Ok(bytes)
 }
 
-thread_local! {
-    static DOWNLOAD: RefCell<Transport> = const { RefCell::new(Transport::Network) };
-}
+struct TempConfig(PathBuf);
 
-pub(super) fn read_fixture(path: &str, limit: usize) -> Option<Result<Vec<u8>, String>> {
-    DOWNLOAD.with_borrow(|transport| match transport {
-        Transport::Network => None,
-        Transport::Offline => panic!("an offline pack request tried to fetch {path}"),
-        Transport::Fixture(root) => Some((|| {
-            let asset_path = if path == "catalog/catalog.json" {
-                root.join("catalog.json")
-            } else {
-                let name = path
-                    .strip_prefix(ASSETS)
-                    .and_then(|path| path.strip_prefix("/packs/"))
-                    .filter(|name| safe_filename(name))
-                    .ok_or_else(|| format!("unexpected fixture request: {path}"))?;
-                root.join("packs").join(name)
-            };
-            let mut bytes = Vec::new();
-            File::open(&asset_path)
-                .and_then(|file| file.take(limit as u64 + 1).read_to_end(&mut bytes))
-                .map_err(|error| format!("reading {}: {error}", asset_path.display()))?;
-            if bytes.len() > limit {
-                return Err(format!("fixture response exceeds the limit: {path}"));
-            }
-            Ok(bytes)
-        })()),
-    })
+impl Drop for TempConfig {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.0);
+    }
 }
 
 #[test]
@@ -49,14 +46,22 @@ pub(super) fn read_fixture(path: &str, limit: usize) -> Option<Result<Vec<u8>, S
 fn published_packs_native_contract() {
     let fixture = std::env::var_os("HYPERMESH_CATALOG_FIXTURE").expect("CI catalog fixture path");
     let output = std::env::var_os("HYPERMESH_CATALOG_CONTRACT_OUTPUT").expect("CI response path");
-    DOWNLOAD.set(Transport::Fixture(fixture.into()));
-    let config = Staging::new(&std::env::temp_dir()).unwrap();
-    let send = |input: Value| {
-        let response = crate::native_pack::request(&config.0, input.clone());
-        assert_eq!(response["status"], 200, "{input}");
+    let config =
+        TempConfig(std::env::temp_dir().join(format!("catalog-contract-{}", uuid::Uuid::new_v4())));
+    storage::create_dir(&config.0).unwrap();
+    let offline = Cell::new(false);
+    let read = |path: &str, limit| {
         assert!(
-            serde_json::to_vec(&response).unwrap().len() <= crate::native_pack::MAX_RESPONSE_BYTES
+            !offline.get(),
+            "an offline pack request tried to fetch {path}"
         );
+        read_fixture(Path::new(&fixture), path, limit)
+    };
+    let source = catalog::CatalogSource::new(&read);
+    let send = |input: Value| {
+        let response = request_from(&config.0, input.clone(), &source);
+        assert_eq!(response["status"], 200, "{input}");
+        assert!(serde_json::to_vec(&response).unwrap().len() <= MAX_RESPONSE_BYTES);
         response.get("body").unwrap().clone()
     };
     let request = |input| {
@@ -123,7 +128,7 @@ fn published_packs_native_contract() {
         );
     }
 
-    DOWNLOAD.set(Transport::Offline);
+    offline.set(true);
     let installed = request(json!({"action":"pack-list"}));
     for (id, name) in [
         ("ember-cat", "Ember Cat"),
@@ -167,5 +172,4 @@ fn published_packs_native_contract() {
     let responses = json!({"catalog":listing,"previews":previews,"appearance":appearance,
                            "voice":voice,"cues":cues});
     fs::write(output, serde_json::to_vec(&responses).unwrap()).unwrap();
-    DOWNLOAD.set(Transport::Network);
 }

@@ -52,6 +52,29 @@ pub fn load_appearance(pack: Option<&Pack>) -> (Sprites, Art) {
     }
 }
 
+pub fn apply_removed_pack(
+    config: &Path,
+    id: &str,
+    sprites: &mut Sprites,
+    art: &mut Art,
+    voice: &mut Voice,
+) -> (bool, Option<String>) {
+    let current = settings::presentation(config);
+    let reset_appearance = current.appearance.as_deref() == Some(id);
+    let mut settings_error = None;
+    if reset_appearance {
+        (*sprites, *art) = load_appearance(None);
+        settings_error = settings::set_appearance_pack(config, "").err();
+    }
+    if current.voice.as_deref() == Some(id) {
+        *voice = Voice::silent();
+        if let Err(error) = settings::set_voice_pack(config, "") {
+            settings_error = Some(error);
+        }
+    }
+    (reset_appearance, settings_error)
+}
+
 pub fn run(config: &Path) -> Result<Option<Selection>, String> {
     pick(config, &mut dialog).map_err(|error| {
         if error.starts_with("Cannot open MCP controls") {

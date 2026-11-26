@@ -166,6 +166,6 @@ private struct PackOperationError: LocalizedError {
             }
         }
         try NativeCompanionPacks.checkCatalogPair(data)
-        print("PASS community pack catalog artwork, voice previews, and Beetle with Clover Rabbit voice")
+        print("PASS community pack previews, Beetle with Clover Rabbit voice, and bundled art and mute after removal")
     }
 }

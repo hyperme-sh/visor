@@ -135,6 +135,49 @@ fn published_packs_native_contract() {
         let selected = request(json!({"action":"pack-select", "medium":medium, "id":id}));
         assert_eq!(selected["id"], id);
     }
+
+    let rabbit_entry = refreshed["packs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|entry| entry["id"] == "clover-rabbit")
+        .unwrap();
+    let rabbit_dir = config.0.join("companion-packs/clover-rabbit");
+    let working = rabbit_dir.join("working.wav");
+    let original = fs::read(&working).unwrap();
+    let edited = fs::read(rabbit_dir.join("sleeping.wav")).unwrap();
+    assert_ne!(edited, original);
+    fs::write(&working, &edited).unwrap();
+    let replace = |entry: &Value, confirmed| {
+        send(json!({"action":"pack-catalog-install", "entry":entry,
+                    "revision":ASSETS, "replace":confirmed}))
+    };
+    let rejected = replace(rabbit_entry, false);
+    assert!(
+        rejected["error"]
+            .as_str()
+            .is_some_and(|error| error.contains("Confirm replacement")),
+        "{rejected}"
+    );
+    assert_eq!(fs::read(&working).unwrap(), edited);
+    offline.set(false);
+    let mut corrupt = rabbit_entry.clone();
+    corrupt["archive"]["sha256"] = json!("0".repeat(64));
+    let rejected = replace(&corrupt, true);
+    assert!(
+        rejected["error"]
+            .as_str()
+            .is_some_and(|error| error.contains("SHA-256")),
+        "{rejected}"
+    );
+    assert_eq!(fs::read(&working).unwrap(), edited);
+    assert_eq!(replace(rabbit_entry, true)["changed"], true);
+    assert_eq!(fs::read(&working).unwrap(), original);
+    assert!(!config
+        .0
+        .join("companion-packs/.previous-clover-rabbit")
+        .exists());
+    offline.set(true);
     assert_eq!(
         request(json!({"action":"pack-list"}))["selected"],
         json!({"appearance":"visor-beetle", "voice":"clover-rabbit"})
@@ -152,7 +195,56 @@ fn published_packs_native_contract() {
     let cues = request(json!({"action":"pack-cues","state":"automation",
                               "cursor":{"clock_ms":0,"reduced_motion":true}}));
     assert_eq!(cues["keys"][0], "state:automation");
+
+    let remove = |id| {
+        assert_eq!(
+            request(json!({"action":"pack-catalog-remove", "id":id}))["changed"],
+            true
+        );
+        assert!(!config.0.join("companion-packs").join(id).exists());
+    };
+    let load = |medium| request(json!({"action":"pack-load", "medium":medium}));
+    remove("visor-beetle");
+    let remaining = request(json!({"action":"pack-list"}));
+    assert_eq!(
+        remaining["selected"],
+        json!({"appearance":"", "voice":"clover-rabbit"})
+    );
+    assert!(!remaining["appearance"]
+        .as_array()
+        .unwrap()
+        .contains(&beetle));
+    let bundled = load("appearance");
+    assert_eq!(bundled["id"], "");
+    assert!(bundled.get("frames").is_none());
+    let remaining_voice = load("voice");
+    assert_eq!(remaining_voice, voice);
+
+    remove("clover-rabbit");
+    let remaining = request(json!({"action":"pack-list"}));
+    assert_eq!(remaining["selected"], json!({"appearance":"", "voice":""}));
+    for medium in ["appearance", "voice"] {
+        assert_eq!(
+            remaining[medium],
+            json!([["ember-cat", "Ember Cat"], ["scout-dog", "Scout Dog"]])
+        );
+    }
+    let muted = load("voice");
+    assert_eq!(muted["id"], "");
+    assert!(muted.get("audio").is_none());
+
+    for medium in ["appearance", "voice"] {
+        assert_eq!(
+            request(json!({"action":"pack-select", "medium":medium, "id":"ember-cat"}))["id"],
+            "ember-cat"
+        );
+    }
+    remove("ember-cat");
+    assert_eq!(load("appearance"), bundled);
+    assert_eq!(load("voice"), muted);
     let responses = json!({"catalog":listing,"previews":previews,"appearance":appearance,
-                           "voice":voice,"cues":cues});
+                           "voice":voice,"cues":cues,
+                           "after_appearance_removal":{"appearance":bundled,"voice":remaining_voice},
+                           "after_voice_removal":{"appearance":bundled,"voice":muted}});
     fs::write(output, serde_json::to_vec(&responses).unwrap()).unwrap();
 }

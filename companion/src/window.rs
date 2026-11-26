@@ -695,17 +695,11 @@ fn apply_pack_choice(app: &mut App, art: &mut pointer::Art, mascot: Mascot) -> b
             })
         }
         Ok(Some(Selection::Removed { id })) => {
-            let current = settings::presentation(&app.config);
-            let reset_appearance = current.appearance.as_deref() == Some(id.as_str());
-            let mut error = None;
+            let (reset_appearance, error) = pack_picker::apply_removed_pack(
+                &app.config, &id, &mut app.sprites, art, &mut app.voice,
+            );
             if reset_appearance {
-                (app.sprites, *art) = pack_picker::load_appearance(None);
                 app.reel = Reel::new(mascot);
-                if let Err(detail) = settings::set_appearance_pack(&app.config, "") { error = Some(detail); }
-            }
-            if current.voice.as_deref() == Some(id.as_str()) {
-                app.voice = Voice::silent();
-                if let Err(detail) = settings::set_voice_pack(&app.config, "") { error = Some(detail); }
             }
             if let Some(detail) = error {
                 *app.status.lock().unwrap() = format!("Pack removed. Saved choices could not be cleared: {detail}");

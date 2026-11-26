@@ -128,11 +128,8 @@ internal sealed class CompanionPacks : IDisposable
             {
                 if (resolved != signal)
                 {
-                    resolved = signal; label = Text(cues, "label") ?? "Visor";
-                    string[] keys = cues.GetProperty("keys").EnumerateArray().Select(key => key.GetString()!).ToArray();
-                    var next = appearance?.Select(keys);
-                    if (!ReferenceEquals(clip, next)) { clip = next; clipAt = now; }
-                    SelectAudio(voice?.Select(keys));
+                    resolved = signal;
+                    Resolve(cues, now);
                 }
                 pointer = appearance?.Cursor(Text(cues, "cursor"));
             }
@@ -153,6 +150,15 @@ internal sealed class CompanionPacks : IDisposable
             catch { StopAudio(); }
         }
         return (clip?.Frame(now - clipAt, reducedMotion), pointer);
+    }
+
+    private void Resolve(JsonElement cues, long now)
+    {
+        label = Text(cues, "label") ?? "Visor";
+        string[] keys = cues.GetProperty("keys").EnumerateArray().Select(key => key.GetString()!).ToArray();
+        var next = appearance?.Select(keys);
+        if (!ReferenceEquals(clip, next)) { clip = next; clipAt = now; }
+        SelectAudio(voice?.Select(keys));
     }
 
     private sealed record Motion(string kind, uint distance_px, uint elapsed_ms, bool clickable);
@@ -197,21 +203,41 @@ internal sealed class CompanionPacks : IDisposable
         return (int)(loop ? step % count : Math.Min(step, count - 1));
     }
 
-    internal static void CheckCatalogPair(JsonElement art, JsonElement audio, JsonElement cue)
+    internal static void CheckCatalogPair(JsonElement fixture)
     {
-        using var appearance = new Appearance(art);
-        var voice = new Voice(audio);
-        string[] keys = cue.GetProperty("keys").EnumerateArray().Select(key => key.GetString()!).ToArray();
-        var clip = appearance.Select(keys);
-        string? recording = voice.Select(keys);
+        using var packs = new CompanionPacks();
+        var art = fixture.GetProperty("appearance");
+        var audio = fixture.GetProperty("voice");
+        var cues = fixture.GetProperty("cues");
+        packs.Apply("appearance", art);
+        packs.Apply("voice", audio);
+        packs.Resolve(cues, Environment.TickCount64);
+        var clip = packs.clip;
+        string? recording = packs.selectedAudio;
         if (Text(art, "id") != "visor-beetle" || Text(audio, "id") != "clover-rabbit"
             || clip?.Frames.Length != 8 || clip.Frame(0, false).Width != 128
-            || appearance.Cursor(Text(cue, "cursor"))?.Width != 32
-            || recording != "working.wav" || voice.Audio(recording) is not { } bytes)
+            || packs.appearance?.Cursor(Text(cues, "cursor"))?.Width != 32
+            || recording != "working.wav" || packs.voice?.Audio(recording) is not { } bytes)
             throw new InvalidOperationException("Visor Beetle and Clover Rabbit did not resolve together");
         using var wave = new MemoryStream(bytes, writable: false);
         using var player = new SoundPlayer(wave);
         player.Load();
+
+        var appearanceRemoval = fixture.GetProperty("after_appearance_removal");
+        packs.Apply("appearance", appearanceRemoval.GetProperty("appearance"));
+        packs.Apply("voice", appearanceRemoval.GetProperty("voice"));
+        packs.Resolve(cues, Environment.TickCount64);
+        if (packs.appearance != null || packs.clip != null || packs.selectedAudio != recording || !packs.pendingAudio)
+            throw new InvalidOperationException("Removing Visor Beetle must restore bundled art and keep Clover Rabbit’s voice");
+
+        var voiceRemoval = fixture.GetProperty("after_voice_removal");
+        packs.Apply("appearance", voiceRemoval.GetProperty("appearance"));
+        packs.Apply("voice", voiceRemoval.GetProperty("voice"));
+        if (packs.Active || packs.selectedAudio != null || packs.pendingAudio)
+            throw new InvalidOperationException("Removing Clover Rabbit must clear the voice and pending playback");
+        var fallback = packs.Frame(true, "running", false, Environment.TickCount64, 0);
+        if (fallback.Art != null || fallback.Cursor != null)
+            throw new InvalidOperationException("Removing Visor Beetle must clear custom art and cursor frames");
     }
 
     private sealed record Clip(Bitmap[] Frames, long Interval, bool Loop)

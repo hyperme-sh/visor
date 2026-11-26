@@ -148,7 +148,7 @@ internal static class CommunityPacks
                 player.Load();
             }
         }
-        CompanionPacks.CheckCatalogPair(data.GetProperty("appearance"), data.GetProperty("voice"), data.GetProperty("cues"));
-        Console.WriteLine("PASS community pack catalog artwork, voice previews, and Beetle with Clover Rabbit voice");
+        CompanionPacks.CheckCatalogPair(data);
+        Console.WriteLine("PASS community pack previews, Beetle with Clover Rabbit voice, and bundled art and mute after removal");
     }
 }

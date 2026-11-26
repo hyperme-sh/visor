@@ -246,10 +246,16 @@ func nativePackFrameIndex(count: Int, interval: UInt64, loop: Bool, elapsed: UIn
     }
 
     static func checkCatalogPair(_ data: Data) throws {
+        struct Selection: Decodable {
+            let appearance: PackBundle
+            let voice: PackBundle
+        }
         struct Fixture: Decodable {
             let appearance: PackBundle
             let voice: PackBundle
             let cues: PackCues
+            let after_appearance_removal: Selection
+            let after_voice_removal: Selection
         }
         let fixture = try JSONDecoder().decode(Fixture.self, from: data)
         let packs = NativeCompanionPacks()
@@ -262,6 +268,20 @@ func nativePackFrameIndex(count: Int, interval: UInt64, loop: Bool, elapsed: UIn
         try verifyNativeUnit(fixture.appearance.id == "visor-beetle" && art?.frames.count == 8)
         try verifyNativeUnit(cursor?.size == NSSize(width: 32, height: 32))
         try verifyNativeUnit(fixture.voice.id == "clover-rabbit" && packs.selectedAudio == "working.wav" && (sound?.duration ?? 0) > 0)
+
+        let appearanceRemoval = fixture.after_appearance_removal
+        packs.apply(appearanceRemoval.appearance, medium: "appearance")
+        packs.apply(appearanceRemoval.voice, medium: "voice")
+        packs.resolve(fixture.cues, now: Self.clock)
+        try verifyNativeUnit(packs.clips.isEmpty && packs.cursorArt.isEmpty && packs.clipKey == nil)
+        try verifyNativeUnit(packs.selectedAudio == "working.wav" && packs.pendingAudio)
+
+        let voiceRemoval = fixture.after_voice_removal
+        packs.apply(voiceRemoval.appearance, medium: "appearance")
+        packs.apply(voiceRemoval.voice, medium: "voice")
+        let (fallbackArt, fallbackCursor) = packs.frame(connected: true, running: true, paused: false, reduced: false)
+        try verifyNativeUnit(!packs.active && fallbackArt == nil && fallbackCursor == nil)
+        try verifyNativeUnit(packs.recordings.isEmpty && packs.selectedAudio == nil && !packs.pendingAudio)
     }
 
     private func selectAudio(_ key: String?) {

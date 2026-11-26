@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use hypermesh_visor::companion_catalog::{CatalogSource, Preview};
 use hypermesh_visor::companion_packs::{decode_wave, read_png, PcmWave, SPRITE_SIZE};
 
-use super::{load_appearance, load_saved, pick, settings, Selection, Voice};
+use super::{apply_removed_pack, load_appearance, load_saved, pick, settings, Selection, Voice};
 use crate::{auth::Pose, mascot::Mascot, pack_catalog_dialog::browse_from, presentation};
 
 #[path = "../../ci/fixtures/published_companion_catalog.rs"]
@@ -103,6 +103,35 @@ fn browse_pack(
     Ok(voice)
 }
 
+fn replace_rabbit(
+    config: &Path,
+    source: &CatalogSource<'_>,
+    confirmed: bool,
+) -> Result<(), String> {
+    let mut replies = ["Clover Rabbit — ", "Replace local copy"].into_iter();
+    let mut prompted = false;
+    let result = browse_from(
+        config,
+        &mut |args, _| {
+            if args.contains(&"--question".into()) {
+                assert!(args.contains(&"--title=Replace local pack?".into()));
+                prompted = true;
+                return Ok(confirmed.then(String::new));
+            }
+            if args.contains(&"--info".into()) {
+                assert!(confirmed && args.contains(&"--title=Pack installed".into()));
+                return Ok(None);
+            }
+            Ok(replies.next().map(|choice| row(args, choice)))
+        },
+        source,
+        false,
+        |_, _| panic!("replacement unexpectedly opened a preview"),
+    );
+    assert!(prompted && replies.next().is_none());
+    result
+}
+
 #[test]
 #[ignore = "requires the published catalog fixture checked out by Linux CI"]
 fn published_packs_linux_contract() {
@@ -111,10 +140,14 @@ fn published_packs_linux_contract() {
         std::env::temp_dir().join(format!("companion-catalog-{}", uuid::Uuid::new_v4())),
     );
     hypermesh_local_storage::create_dir(&config.0).unwrap();
-    let corrupt = Cell::new(true);
+    let corrupt = Cell::new(Some("ember-cat"));
     let offline = Cell::new(false);
+    let archive_reads = Cell::new(0);
     let read = |path: &str, limit| {
         assert!(!offline.get(), "offline companion tried to fetch {path}");
+        if path.ends_with(".pack.json") {
+            archive_reads.set(archive_reads.get() + 1);
+        }
         let data = fixture::read_fixture(Path::new(&root), path, limit)?;
         if path != "catalog/catalog.json" {
             return Ok(data);
@@ -122,16 +155,16 @@ fn published_packs_linux_contract() {
         let mut index: serde_json::Value = serde_json::from_slice(&data).unwrap();
         assert_eq!(index["source_revision"], fixture::SOURCE);
         assert_eq!(index["asset_revision"], fixture::ASSETS);
-        if !corrupt.get() {
+        let Some(corrupt_id) = corrupt.get() else {
             return Ok(data);
-        }
-        let cat = index["packs"]
+        };
+        let entry = index["packs"]
             .as_array_mut()
             .unwrap()
             .iter_mut()
-            .find(|pack| pack["id"] == "ember-cat")
+            .find(|pack| pack["id"] == corrupt_id)
             .unwrap();
-        cat["archive"]["sha256"] = serde_json::json!("0".repeat(64));
+        entry["archive"]["sha256"] = serde_json::json!("0".repeat(64));
         Ok(serde_json::to_vec(&index).unwrap())
     };
     let source = CatalogSource::new(&read);
@@ -140,7 +173,7 @@ fn published_packs_linux_contract() {
         .unwrap();
     assert!(rejected.contains("SHA-256"), "{rejected}");
     assert!(!config.0.join("companion-packs/ember-cat").exists());
-    corrupt.set(false);
+    corrupt.set(None);
     let mut rabbit_preview = None;
     for (id, name, has_voice) in PACKS {
         let preview = browse_pack(&config.0, &source, name, Some(has_voice)).unwrap();
@@ -177,6 +210,31 @@ fn published_packs_linux_contract() {
         panic!("expected installed voice");
     };
     settings::set_voice_pack(&config.0, &id).unwrap();
+
+    offline.set(false);
+    let rabbit_dir = config.0.join("companion-packs/clover-rabbit");
+    let working = rabbit_dir.join("working.wav");
+    let original = fs::read(&working).unwrap();
+    let edited = fs::read(rabbit_dir.join("sleeping.wav")).unwrap();
+    assert_ne!(edited, original);
+    fs::write(&working, &edited).unwrap();
+    let before = archive_reads.get();
+    replace_rabbit(&config.0, &source, false).unwrap();
+    assert_eq!(archive_reads.get(), before);
+    assert_eq!(fs::read(&working).unwrap(), edited);
+    corrupt.set(Some("clover-rabbit"));
+    let rejected = replace_rabbit(&config.0, &source, true).unwrap_err();
+    assert!(rejected.contains("SHA-256"), "{rejected}");
+    assert_eq!(fs::read(&working).unwrap(), edited);
+    corrupt.set(None);
+    replace_rabbit(&config.0, &source, true).unwrap();
+    assert_eq!(fs::read(&working).unwrap(), original);
+    assert!(!config
+        .0
+        .join("companion-packs/.previous-clover-rabbit")
+        .exists());
+
+    offline.set(true);
     let saved = settings::presentation(&config.0);
     assert_eq!(saved.appearance.as_deref(), Some("visor-beetle"));
     assert_eq!(saved.voice.as_deref(), Some("clover-rabbit"));
@@ -188,7 +246,7 @@ fn published_packs_linux_contract() {
     let beetle = beetle.unwrap();
     let rabbit = rabbit.unwrap();
     let signals = presentation::signals(Mascot::Automation, false, &Pose::Idle, None, None);
-    let (mut sprites, cursor) = load_appearance(Some(&beetle));
+    let (mut sprites, mut cursor) = load_appearance(Some(&beetle));
     assert!(
         sprites.select(&signals),
         "expected a custom clip for Visor Beetle"
@@ -198,8 +256,81 @@ fn published_packs_linux_contract() {
         cursor.frame("pointer").rgba,
         beetle.cursor("pointer_32.png").unwrap().rgba
     );
-    let voice = Voice::load(&rabbit);
+    let mut voice = Voice::load(&rabbit);
     let cue = voice.cue_for(&signals).expect("Clover Rabbit working cue");
     assert_eq!(cue.rate, rabbit_preview.rate);
     assert_eq!(cue.pcm, rabbit_preview.pcm);
+    drop((beetle, rabbit));
+
+    let remove = |pack: &str, confirm: bool| {
+        let mut choices = ["Remove installed pack", pack].into_iter();
+        let mut prompted = false;
+        let result = pick(&config.0, &mut |args, _| {
+            if args.contains(&"--question".into()) {
+                assert!(args.contains(&"--title=Remove local pack?".into()));
+                prompted = true;
+                return Ok(confirm.then(String::new));
+            }
+            Ok(Some(row(
+                args,
+                choices.next().expect("expected remove dialog"),
+            )))
+        })
+        .unwrap();
+        assert!(prompted && choices.next().is_none());
+        result
+    };
+    assert!(remove("Visor Beetle [visor-beetle]", false).is_none());
+    assert!(config
+        .0
+        .join("companion-packs/visor-beetle/pack.json")
+        .is_file());
+    assert_eq!(
+        settings::presentation(&config.0).appearance,
+        saved.appearance
+    );
+
+    let bundled = load_appearance(None);
+    for (id, label, resets_appearance) in [
+        ("visor-beetle", "Visor Beetle [visor-beetle]", true),
+        ("clover-rabbit", "Clover Rabbit [clover-rabbit]", false),
+    ] {
+        let Some(Selection::Removed { id: removed }) = remove(label, true) else {
+            panic!("expected confirmed removal of {id}");
+        };
+        assert_eq!(removed, id);
+        assert!(!config.0.join("companion-packs").join(id).exists());
+        assert_eq!(
+            apply_removed_pack(&config.0, id, &mut sprites, &mut cursor, &mut voice),
+            (resets_appearance, None)
+        );
+        let saved = settings::presentation(&config.0);
+        assert!(saved.appearance.is_none());
+        assert!(
+            !sprites.select(&signals),
+            "bundled art should have no custom cue"
+        );
+        assert_eq!(
+            sprites.timing(Mascot::Automation),
+            bundled.0.timing(Mascot::Automation)
+        );
+        assert_eq!(
+            cursor.frame("pointer").rgba,
+            bundled.1.frame("pointer").rgba
+        );
+        if resets_appearance {
+            assert_eq!(saved.voice.as_deref(), Some("clover-rabbit"));
+            assert_eq!(voice.cue_for(&signals).unwrap().pcm, rabbit_preview.pcm);
+        } else {
+            assert!(saved.voice.is_none());
+            assert!(voice.cue_for(&signals).is_none());
+        }
+    }
+    let saved = settings::presentation(&config.0);
+    let (appearance, voice) = load_saved(
+        &config.0,
+        saved.appearance.as_deref(),
+        saved.voice.as_deref(),
+    );
+    assert!(appearance.is_none() && voice.is_none());
 }

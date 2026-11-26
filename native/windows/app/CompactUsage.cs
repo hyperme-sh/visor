@@ -19,12 +19,18 @@ internal readonly record struct CompactUsage(ulong Input, ulong Output)
         if (maximum == 0) return (0, 0);
         return (Input == 0 ? 0 : Math.Max(1, (int)(28 * (Input / maximum))), Output == 0 ? 0 : Math.Max(1, (int)(28 * (Output / maximum))));
     }
-    internal static Icon Draw(Icon source, string phase, CompactUsage? usage)
+    internal static Icon Draw(Icon source, string phase, CompactUsage? usage, Image? art = null)
     {
         using Bitmap image = new(32, 32);
         using (Graphics graphics = Graphics.FromImage(image))
         {
-            graphics.DrawIcon(source, new Rectangle(0, 0, 32, 32));
+            if (art == null) graphics.DrawIcon(source, new Rectangle(0, 0, 32, 32));
+            else
+            {
+                double scale = Math.Min(32.0 / art.Width, 32.0 / art.Height);
+                int width = (int)(art.Width * scale), height = (int)(art.Height * scale);
+                graphics.DrawImage(art, new Rectangle((32 - width) / 2, (32 - height) / 2, width, height));
+            }
             using SolidBrush state = new(phase == "running" ? Color.LimeGreen : phase == "paused" ? Color.Orange : Color.Gray);
             graphics.FillEllipse(Brushes.Black, 23, 1, 8, 8);
             graphics.FillEllipse(state, 24, 2, 6, 6);

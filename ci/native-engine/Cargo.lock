@@ -2534,6 +2534,7 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 name = "visor-native-engine-contract"
 version = "0.1.0"
 dependencies = [
+ "base64",
  "bytes",
  "http-body-util",
  "hyper",
@@ -2541,8 +2542,11 @@ dependencies = [
  "hypermesh-local-storage",
  "hypermesh-local-transport",
  "hypermesh-visor",
+ "png",
  "serde_json",
  "tokio",
+ "toml",
+ "uuid",
  "windows-sys 0.61.2",
 ]
 

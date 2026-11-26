@@ -1,5 +1,11 @@
 //! Native engine protocol contracts without opening or controlling a desktop.
 #[cfg(all(test, windows))]
+use hypermesh_visor::companion_packs;
+#[cfg(all(test, windows))]
+#[path = "../../../src/native_pack.rs"]
+mod native_pack;
+
+#[cfg(all(test, windows))]
 mod tests {
     #[test]
     fn native_category_consent_store() {

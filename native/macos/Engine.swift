@@ -42,6 +42,10 @@ private func desktopCallback(_ bytes: UnsafePointer<UInt8>?, _ count: Int, _ out
     static let shared = NativeRuntime()
     private let queue = DispatchQueue(label: "sh.hyperme.visor.internal-control")
     private var timer: Timer?
+    private var packTimer: Timer?
+    private let packs = NativeCompanionPacks()
+    private var loadingPacks = false
+    private var selectingPack = false
     private var workspaceObservers: [NSObjectProtocol] = []
     private var statusItem: NSStatusItem?
     private var mascotFrames: [String: [NSImage]] = [:]
@@ -116,6 +120,13 @@ private func desktopCallback(_ bytes: UnsafePointer<UInt8>?, _ count: Int, _ out
         trust.target = self; menu.addItem(trust)
         let sessions = NSMenuItem(title: "Choose session", action: #selector(chooseSession), keyEquivalent: "")
         sessions.target = self; menu.addItem(sessions)
+        let packItem = NSMenuItem(title: "Companion packs", action: nil, keyEquivalent: "")
+        let packMenu = NSMenu(title: "Companion packs")
+        for (index, title) in ["Appearance", "Voice"].enumerated() {
+            let item = NSMenuItem(title: title, action: #selector(choosePack(_:)), keyEquivalent: "")
+            item.target = self; item.tag = index; packMenu.addItem(item)
+        }
+        packItem.submenu = packMenu; menu.addItem(packItem)
         let feedback = NSMenuItem(title: "Human feedback", action: #selector(openFeedback), keyEquivalent: "")
         feedback.target = self; menu.addItem(feedback)
         let crashes = NSMenuItem(title: "Crash diagnostics", action: #selector(crashDiagnostics), keyEquivalent: "")
@@ -137,11 +148,18 @@ private func desktopCallback(_ bytes: UnsafePointer<UInt8>?, _ count: Int, _ out
             })
         }
         timer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { _ in Task { @MainActor in self.poll() } }
+        loadingPacks = true
+        Task { @MainActor in
+            await packs.load()
+            loadingPacks = false
+            if started { update() }
+        }
         update()
     }
     func applicationWillTerminate(_ notification: Notification) {
         feedbackController?.close()
         allowed = false; idleResume = nil; pendingApproval = false; epoch &+= 1; releaseHeld()
+        started = false; packs.stop(); packTimer?.invalidate()
         NativePointerOverlay.shared.hide()
         NativeCompanionPanel.shared.hide()
         if let tap { CGEvent.tapEnable(tap: tap, enable: false) }
@@ -198,34 +216,68 @@ private func desktopCallback(_ bytes: UnsafePointer<UInt8>?, _ count: Int, _ out
             Task { @MainActor in completion(result) }
         }
     }
+    @objc private func choosePack(_ item: NSMenuItem) {
+        guard started, !loadingPacks, !selectingPack else { return }
+        selectingPack = true
+        pause("Paused for companion pack selection")
+        Task { @MainActor in
+            let saved = await packs.choose(item.tag == 0 ? "appearance" : "voice")
+            selectingPack = false
+            if started {
+                if !saved { message = "The companion pack could not be loaded or saved." }
+                update()
+            }
+        }
+    }
+
     private func update() {
-        NativePointerOverlay.shared.setVisible(nativePointerOverlayVisible(connected: engineConnected,
-            sessionOpen: sessionOpen, allowed: allowed, phase: currentPhase, restartRequired: restartRequired))
         let readiness = restartRequired ? "Restore permissions in System Settings, then quit and reopen Visor. Desktop access remains off." : (started && !sessionOpen ? "Waiting for a local client to open a session" : message)
         label?.stringValue = "\(readiness)\nSession: \(currentSession ?? "none") · Engine: \(currentPhase)\nControl socket: \(runtimePath)/control.sock"
         let access = desktopAccessControl(started: started, sessionOpen: sessionOpen, allowed: allowed,
                                           paused: currentPhase == "paused", restartRequired: restartRequired)
-        allowButton?.isEnabled = access.enabled && !pendingApproval && trustController == nil && connectionsController == nil && feedbackController == nil
+        allowButton?.isEnabled = access.enabled && !pendingApproval && !selectingPack && trustController == nil && connectionsController == nil && feedbackController == nil
         allowButton?.title = access.title
-        menuAllow?.isEnabled = access.enabled && !selectingSession && !pendingApproval && trustController == nil && connectionsController == nil && feedbackController == nil
+        menuAllow?.isEnabled = access.enabled && !selectingSession && !selectingPack && !pendingApproval && trustController == nil && connectionsController == nil && feedbackController == nil
         menuAllow?.title = access.title
         for item in destinationItems { item.isEnabled = engineConnected && sessionOpen && currentSession != nil }
+        if packs.active && packTimer == nil {
+            packTimer = Timer.scheduledTimer(withTimeInterval: 0.04, repeats: true) { [weak self] _ in
+                Task { @MainActor in self?.renderCompanion() }
+            }
+        } else if !packs.active {
+            packTimer?.invalidate(); packTimer = nil
+        }
+        renderCompanion()
+    }
+
+    private func renderCompanion() {
+        let reduced = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        let (art, cursor) = packs.frame(connected: engineConnected && !restartRequired,
+            running: allowed && currentPhase == "running",
+            paused: currentPhase == "paused" || (!allowed && currentPhase == "running"), reduced: reduced)
+        NativePointerOverlay.shared.customImage = cursor
+        NativePointerOverlay.shared.setVisible(nativePointerOverlayVisible(connected: engineConnected,
+            sessionOpen: sessionOpen, allowed: allowed, phase: currentPhase, restartRequired: restartRequired))
         let state = nativeMascotState(connected: engineConnected && !restartRequired, allowed: allowed, phase: currentPhase)
-        if let frames = mascotFrames[state], frames.count == (state == "disconnected" ? 6 : 8) {
-            let frame = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion ? 0 : mascotTick % frames.count
+        if let art {
+            statusItem?.button?.image = art
+            statusItem?.button?.title = ""
+        } else if let frames = mascotFrames[state], frames.count == (state == "disconnected" ? 6 : 8) {
+            let frame = reduced ? 0 : mascotTick % frames.count
             statusItem?.button?.image = frames[frame]
             statusItem?.button?.title = ""
         } else {
             statusItem?.button?.image = nil
             statusItem?.button?.title = allowed ? "Visor: ON" : "Visor: off"
         }
-        statusItem?.button?.setAccessibilityLabel("Hypermesh Visor: " + currentPhase)
-        let detail = [message, "Session: \(sessionOpen ? "open" : "none") · Engine: \(currentPhase)", usageSummary]
+        let label = packs.active ? packs.label : currentPhase
+        statusItem?.button?.setAccessibilityLabel("Hypermesh Visor: " + label)
+        let detail = [message, "Session: \(sessionOpen ? "open" : "none") · Engine: \(label)", usageSummary]
             .compactMap { $0 }.joined(separator: "\n")
         statusItem?.button?.toolTip = detail
         floatingItem?.state = NativeCompanionPanel.shared.enabled ? .on : .off
         NativeCompanionPanel.shared.update(image: statusItem?.button?.image,
-            state: !engineConnected ? "Disconnected" : (allowed ? "Running" : (currentPhase == "paused" ? "Paused" : "Off")),
+            state: packs.active ? label : (!engineConnected ? "Disconnected" : (allowed ? "Running" : (currentPhase == "paused" ? "Paused" : "Off"))),
             usage: compactUsage, detail: detail, allowed: allowed)
 
     }
@@ -251,6 +303,7 @@ private func desktopCallback(_ bytes: UnsafePointer<UInt8>?, _ count: Int, _ out
             self.usageSummary = self.sessionOpen ? nativeUsageSummary(body["session"] as? [String:Any]) : nil
             self.compactUsage = self.sessionOpen ? nativeCompactUsage(body["session"] as? [String:Any]) : nil
             self.currentPhase = automation["phase"] as? String ?? "off"
+            self.packs.observe(body, automation: automation)
             self.selectedEpoch = nativeEpoch(automation["epoch"])
             if self.allowed && (!self.sessionOpen || self.currentPhase != "running" || self.currentSession != self.approvedSession) { self.pause("Session changed, stopped or paused") }
             if self.allowed, let interruption = desktopInterruption(permissionsAndMonitor: self.permissionsAndMonitor(), layoutMatches: self.layoutMatchesApproval()) {
@@ -381,7 +434,7 @@ private func desktopCallback(_ bytes: UnsafePointer<UInt8>?, _ count: Int, _ out
         return body
     }
     @objc func allow() {
-        guard !selectingSession && trustController == nil && connectionsController == nil && feedbackController == nil && started && sessionOpen && !restartRequired && !allowed && !pendingApproval, let selected = currentSession else { return }
+        guard !selectingSession && !selectingPack && trustController == nil && connectionsController == nil && feedbackController == nil && started && sessionOpen && !restartRequired && !allowed && !pendingApproval, let selected = currentSession else { return }
         idleResume = nil
         installMonitor()
         let missing = [("Screen Recording", CGPreflightScreenCaptureAccess()),
@@ -420,6 +473,7 @@ private func desktopCallback(_ bytes: UnsafePointer<UInt8>?, _ count: Int, _ out
             [CGMouseButton.left, .right, .center].contains { CGEventSource.buttonState(.hidSystemState, button: $0) }
     }
     private func physicalInput() {
+        packs.noteInput()
         if pendingApproval { pause("Real input cancelled the pending approval"); return }
         let now = ProcessInfo.processInfo.systemUptime
         guard allowed, let selected = approvedSession else { idleResume?.noteInput(now: now); return }

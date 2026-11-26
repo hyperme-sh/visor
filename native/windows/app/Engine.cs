@@ -51,6 +51,30 @@ internal static class Engine
     }
 
     private static readonly SemaphoreSlim FeedbackCalls = new(1);
+
+    internal static Task<JsonElement?> Pack(object fields) => Task.Run(() => PackRequest(fields));
+
+    // Cue resolution does no I/O and does not enter the desktop-control queue.
+    internal static JsonElement? PackRequest(object fields)
+    {
+        try
+        {
+            byte[] request = JsonSerializer.SerializeToUtf8Bytes(fields);
+            int code = hypermesh_native_control(request, (nuint)request.Length, out nint output, out nuint length);
+            try
+            {
+                if (code != 0 || output == 0 || length == 0 || length > 12 * 1024 * 1024) return null;
+                byte[] bytes = new byte[(int)length];
+                Marshal.Copy(output, bytes, 0, bytes.Length);
+                using JsonDocument response = JsonDocument.Parse(bytes);
+                JsonElement root = response.RootElement;
+                return root.GetProperty("status").GetInt32() == 200 ? root.GetProperty("body").Clone() : null;
+            }
+            finally { hypermesh_native_free(output); }
+        }
+        catch { return null; }
+    }
+
     internal static async Task<JsonElement?> Feedback(string action, string session, bool optIn = false, string category = "", string title = "", string body = "")
     {
         await FeedbackCalls.WaitAsync();

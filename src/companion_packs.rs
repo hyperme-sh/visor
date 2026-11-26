@@ -7,6 +7,8 @@ use std::path::Path;
 
 use serde::Deserialize;
 
+#[path = "companion_pack_cursor.rs"]
+pub mod cursor;
 #[path = "companion_pack_media.rs"]
 mod media;
 pub use media::{decode_wave, read_png, PcmWave, Png};
@@ -19,7 +21,7 @@ pub const MAX_DISTINCT_SPRITES: usize = 64;
 pub const MAX_DISTINCT_VOICES: usize = 16;
 pub const DEFAULT_FRAME_MS: u64 = 150;
 
-#[derive(Clone, Copy, Debug, Deserialize)]
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum State {
     Idle,

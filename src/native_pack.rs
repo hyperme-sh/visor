@@ -9,6 +9,7 @@ use base64::Engine as _;
 use serde::Deserialize;
 use serde_json::{json, Value};
 
+use crate::companion_packs::cursor::{self, Motion};
 use crate::companion_packs::{self as packs, ClipSpec, Medium, Pack, PcmWave, Png, Signals, State};
 use hypermesh_local_storage as storage;
 
@@ -35,7 +36,15 @@ enum Request {
         mode: Option<String>,
         mood: Option<String>,
         vibe: Option<String>,
+        cursor: Option<CursorSample>,
     },
+}
+
+#[derive(Deserialize)]
+struct CursorSample {
+    clock_ms: u64,
+    reduced_motion: bool,
+    motion: Option<Motion>,
 }
 
 pub(crate) fn request(config: &Path, input: Value) -> Value {
@@ -77,6 +86,7 @@ fn run(config: &Path, input: Request) -> Result<Value, ()> {
             mode,
             mood,
             vibe,
+            cursor,
         } => {
             let signals = Signals::new(
                 state,
@@ -85,7 +95,20 @@ fn run(config: &Path, input: Request) -> Result<Value, ()> {
                 mood.as_deref(),
                 vibe.as_deref(),
             );
-            Ok(json!({"label":signals.label, "keys":signals.ordered_selectors()}))
+            let mut body = json!({"label":signals.label, "keys":signals.ordered_selectors()});
+            if let Some(sample) = cursor.filter(|_| state == State::Automation) {
+                let pose = cursor::pose(true, true, sample.motion);
+                let age = sample
+                    .motion
+                    .map_or(sample.clock_ms, |motion| motion.age_ms);
+                let frame = if sample.reduced_motion {
+                    0
+                } else {
+                    cursor::cursor_frame(pose, age)
+                };
+                body["cursor"] = json!(cursor::cursor_frame_name(pose, frame));
+            }
+            Ok(body)
         }
     }
 }
@@ -93,6 +116,13 @@ fn run(config: &Path, input: Request) -> Result<Value, ()> {
 fn with_style(mut loaded: Value, table: &toml::Table) -> Value {
     loaded["mood"] = json!(value(table, "mood"));
     loaded["vibe"] = json!(value(table, "vibe"));
+    let sleep_after_ms = table
+        .get("sleep_after_secs")
+        .and_then(toml::Value::as_integer)
+        .and_then(|value| u64::try_from(value).ok())
+        .unwrap_or(900)
+        .saturating_mul(1000);
+    loaded["sleep_after_ms"] = json!(sleep_after_ms);
     loaded
 }
 
@@ -283,22 +313,37 @@ fn wav(wave: PcmWave) -> String {
 mod tests {
     use super::*;
 
+    fn write_fixture(path: &Path, bytes: &[u8]) {
+        storage::open(path, storage::Open::New)
+            .unwrap()
+            .write_all(bytes)
+            .unwrap();
+    }
+
     #[test]
     fn native_pack_selection_keeps_independent_settings_and_rejects_invalid_ids() {
         let config = std::env::temp_dir().join(format!("native-pack-{}", uuid::Uuid::new_v4()));
         let dir = config.join("companion-packs/rabbit");
         fs::create_dir_all(&dir).unwrap();
-        fs::write(
-            config.join("companion.toml"),
-            "mood = 'calm'\nvoice_pack = 'separate'\n",
-        )
-        .unwrap();
-        fs::write(dir.join("pack.json"), r#"{"format":1,"name":"Rabbit","sprites":{"default":{"frames":["rest.png"]},"state:idle":{"frames":["missing.png"]}}}"#).unwrap();
-        fs::write(
-            dir.join("rest.png"),
+        write_fixture(
+            &config.join("companion.toml"),
+            b"mood = 'calm'\nvoice_pack = 'separate'\n",
+        );
+        write_fixture(&dir.join("pack.json"), br#"{"format":1,"name":"Rabbit","sprites":{"default":{"frames":["rest.png"]},"state:idle":{"frames":["missing.png"]}},"voice":{"state:paused":"line.wav"}}"#);
+        write_fixture(
+            &dir.join("rest.png"),
             include_bytes!("../companion/assets/states/sleeping_0_400x520.png"),
-        )
-        .unwrap();
+        );
+        let wave = wav(PcmWave {
+            rate: 8_000,
+            pcm: vec![0; 80],
+        });
+        write_fixture(
+            &dir.join("line.wav"),
+            &base64::engine::general_purpose::STANDARD
+                .decode(&wave)
+                .unwrap(),
+        );
 
         let select = |id| {
             request(
@@ -317,6 +362,21 @@ mod tests {
         assert_eq!(value(&prefs, "appearance_pack"), Some("rabbit"));
         assert_eq!(value(&prefs, "voice_pack"), Some("separate"));
         assert_eq!(value(&prefs, "mood"), Some("calm"));
+        let voice = |id| {
+            request(
+                &config,
+                json!({"action":"pack-select","medium":"voice","id":id}),
+            )
+        };
+        let selected_voice = voice("rabbit");
+        assert_eq!(selected_voice["body"]["audio"]["line.wav"], wave);
+        assert_eq!(selected_voice["body"]["cues"]["state:paused"], "line.wav");
+        assert_eq!(voice("")["status"], 200);
+        assert_eq!(value(&settings(&config).unwrap(), "voice_pack"), None);
+        assert_eq!(
+            value(&settings(&config).unwrap(), "appearance_pack"),
+            Some("rabbit")
+        );
         assert_eq!(select("")["status"], 200);
         assert_eq!(value(&settings(&config).unwrap(), "appearance_pack"), None);
         fs::remove_dir_all(&config).unwrap();
@@ -352,5 +412,24 @@ mod tests {
                 "label":"Paused","keys":["state:paused","default"],
             })
         );
+    }
+
+    #[test]
+    fn native_cursor_uses_the_shared_click_frames_and_reduced_motion() {
+        let cues = |state, reduced| {
+            request(
+                Path::new(""),
+                json!({
+                    "action":"pack-cues", "state":state,
+                    "cursor":{
+                        "clock_ms":1000, "reduced_motion":reduced,
+                        "motion":{"kind":"click","age_ms":150,"distance_px":0,"elapsed_ms":0,"clickable":false},
+                    },
+                }),
+            )
+        };
+        assert_eq!(cues("automation", false)["body"]["cursor"], "click2");
+        assert_eq!(cues("automation", true)["body"]["cursor"], "click1");
+        assert!(cues("paused", false)["body"]["cursor"].is_null());
     }
 }

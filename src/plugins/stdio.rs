@@ -79,6 +79,7 @@ pub(super) async fn invoke(
         .env_clear()
         .args([
             "--unshare-all",
+            "--unshare-user",
             "--disable-userns",
             "--die-with-parent",
             "--new-session",

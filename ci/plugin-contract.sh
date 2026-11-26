@@ -48,7 +48,7 @@ PY
 # Fail with the runner's namespace error before invoking the production guard,
 # which deliberately discards subprocess stderr.
 install -m 500 "$scratch/packages/current/plugin" "$scratch/probe"
-env -i /usr/bin/bwrap --unshare-all --disable-userns --die-with-parent --new-session \
+env -i /usr/bin/bwrap --unshare-all --unshare-user --disable-userns --die-with-parent --new-session \
     --clearenv --cap-drop ALL --ro-bind "$scratch/probe" /plugin --remount-ro / \
     --chdir / -- /plugin <<'JSON'
 {"jsonrpc":"2.0","id":1,"method":"initialize","params":{"plugin_id":"org.example.byte-count","api_versions":[1,0]}}

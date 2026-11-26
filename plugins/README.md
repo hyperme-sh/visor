@@ -37,7 +37,9 @@ root containing its executable, an empty environment, stdio pipes, and private
 user, PID, and network namespaces. It receives no workspace mount or
 credentials. Linux requires an unprivileged Visor process, the system
 `/usr/bin/bwrap` with user/PID/network namespace support, and a kernel with
-`close_range` support. If sandbox setup fails, the call fails.
+`close_range` support. On Ubuntu with AppArmor user-namespace restrictions,
+the owner can enable the distribution's `bwrap-userns-restrict` profile for
+`/usr/bin/bwrap`. If sandbox setup fails, the call fails.
 
 The host sends the highest common versions in descending order. The plugin
 replies with the package ID and highest offered API version it implements.

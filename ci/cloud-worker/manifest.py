@@ -4,6 +4,7 @@ import argparse
 import hashlib
 import json
 import re
+import sys
 from pathlib import Path
 from urllib.parse import quote
 
@@ -32,8 +33,8 @@ def read_inventory(path):
     return packages
 
 
-def inspect_image(path, architecture, revision, profile):
-    image, = json.loads(path.read_text())
+def inspect_image(images, architecture, revision, profile):
+    image, = images
     config = image["Config"]
     labels = config["Labels"]
     if (
@@ -88,13 +89,13 @@ def write_json(path, data):
     path.write_text(json.dumps(data, indent=2) + "\n")
 
 
-def build(args):
+def build(args, inspected):
     if not re.fullmatch(r"[0-9a-f]{40}", args.revision):
         raise ValueError("expected a full source commit")
     architecture = {"amd64": "x86_64", "arm64": "aarch64"}[args.arch]
     output = args.output
-    base = inspect_image(args.base_image, args.arch, args.revision, "base")
-    pack = inspect_image(args.pack_image, args.arch, args.revision, "coding-v1")
+    base = inspect_image(inspected["base"], args.arch, args.revision, "base")
+    pack = inspect_image(inspected["pack"], args.arch, args.revision, "coding-v1")
     base_layers = base["RootFS"]["Layers"]
     if pack["RootFS"]["Layers"][:len(base_layers)] != base_layers or base["Id"] == pack["Id"]:
         raise ValueError("coding pack must extend the selected base image")
@@ -154,14 +155,12 @@ def main():
     sub = parser.add_subparsers(dest="command", required=True)
     build_parser = sub.add_parser("build")
     build_parser.add_argument("output", type=Path)
-    build_parser.add_argument("base_image", type=Path)
-    build_parser.add_argument("pack_image", type=Path)
     build_parser.add_argument("arch", choices=("amd64", "arm64"))
     build_parser.add_argument("revision")
     sub.add_parser("verify").add_argument("output", type=Path)
     args = parser.parse_args()
     if args.command == "build":
-        build(args)
+        build(args, json.load(sys.stdin))
     else:
         verify(args.output)
 

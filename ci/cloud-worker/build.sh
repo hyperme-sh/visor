@@ -40,7 +40,8 @@ build cloud-coding visor-cloud-worker-coding:ci
 [[ "$(docker image inspect --format '{{.Id}}' visor-cloud-worker-coding:ci)" == "$before" ]]
 
 docker image save visor-cloud-worker:ci | gzip -n -1 > "$output/visor-cloud-worker-$architecture.tar.gz"
-python3 ci/cloud-worker/manifest.py build "$output" "$temporary/base.json" "$temporary/coding-v1.json" "$architecture" "$revision"
+jq -s '{base: .[0], pack: .[1]}' "$temporary/base.json" "$temporary/coding-v1.json" \
+    | python3 ci/cloud-worker/manifest.py build "$output" "$architecture" "$revision"
 python3 ci/cloud-worker/manifest.py verify "$output"
 
 # Exercise checksum refusal without changing the archive or retaining a bad manifest.

@@ -22,6 +22,56 @@ XWayland only covers X11 events and cannot classify the portal sender using
 the XTEST device filter. Suppressing notifications while Visor injects would
 also suppress a user's interruption during that interval.
 
+## KDE first
+
+KWin's native libinput backend sees key, button, and motion events before seat
+deduplication, motion coalescing, and keyboard accessibility handling.
+RemoteDesktop EIS devices enter input redirection separately. A KWin
+implementation can observe the local seat before those transformations and
+let the physical event continue to its destination. That boundary also
+avoids using device names or timing to identify Visor's EIS stream.
+[KWin libinput dispatch](https://github.com/KDE/kwin/blob/f1e7d1d4430586d818d9d893f40b157b0f682dbd/src/backends/libinput/connection.cpp#L276-L391)
+[KWin keyboard redirection](https://github.com/KDE/kwin/blob/f1e7d1d4430586d818d9d893f40b157b0f682dbd/src/keyboard_input.cpp#L279-L331)
+[KWin EIS dispatch](https://github.com/KDE/kwin/blob/f1e7d1d4430586d818d9d893f40b157b0f682dbd/src/plugins/eis/eiscontext.cpp#L259-L296)
+
+The first candidate is an opt-in KWin RemoteDesktop session that ends on
+local takeover. With the opt-in bound to the portal-approved seat and sender,
+KWin would latch the interruption before forwarding any more input from
+that sender, discard its pending events, release its held keys and buttons,
+and close the session. Visor would treat the EIS disconnect or portal
+session closure as an interruption, cancel the current operation, and
+require fresh local approval before sending again. KWin must advertise
+this behavior for the session before Visor enables injection. The public
+RemoteDesktop portal currently has no option for it.
+
+An [isolated EI/EIS contract](../tests/wayland/eis-pause-contract.c) puts a
+pointer frame in the libeis queue before the simulated takeover. The
+server-side latch discards the queued motion and the sender receives the
+disconnect. When the server called `eis_device_pause()` during active
+emulation, libeis 1.2.1 and 1.5.0 sent no pause event. With
+[libeis 1.6.0](https://gitlab.freedesktop.org/libinput/libei/-/blob/1.6.0/src/libeis-device.c#L1704-1728)
+the sender received the pause event and the queued motion still reached
+the server's discard path.
+[libeis pause documentation](https://libinput.pages.freedesktop.org/libei/api/group__libeis-device.html)
+
+The contract runs with a C compiler, `pkg-config`, and the libei and libeis
+development libraries. It uses a private socket pair and does not open a
+display or read input devices.
+
+```sh
+cc -std=c11 -Wall -Wextra -Werror tests/wayland/eis-pause-contract.c \
+  $(pkg-config --cflags --libs libei-1.0 libeis-1.0) -o /tmp/visor-eis-pause-contract
+/tmp/visor-eis-pause-contract
+```
+
+Stock KWin still needs the seat hook and portal capability. The contract
+covers transport behavior only. For the first compositor qualification,
+check that a key consumed by accessibility handling and a button or
+motion during concurrent EIS input both end the opted-in session. Check
+that physical input still reaches the desktop under its normal rules,
+another session is unaffected, and an unadvertised capability keeps
+Visor's input disabled.
+
 ## What an input backend must establish
 
 - Local pointer motion, button presses, and key presses pause automation
@@ -40,7 +90,8 @@ also suppress a user's interruption during that interval.
   the user's input. The system cursor stays visible where the compositor does
   not expose cursor replacement. [Wayland input and surface model](https://wayland.freedesktop.org/docs/book/Protocol.html)
 
-Before enabling the input backend, add CI contracts for simultaneous physical
-and emulated input, sender or interruption-signal loss, and permission
-revocation on supported GNOME and KDE versions. The existing backend refusal
-contract covers the current absence of that capability.
+Before enabling an input backend for a compositor, add CI contracts for
+simultaneous physical and emulated input, sender or interruption-signal loss,
+and permission revocation on the supported versions of that compositor. The
+existing backend refusal contract covers the current absence of that
+capability.

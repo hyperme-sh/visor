@@ -147,7 +147,10 @@ struct Authority {
     binding: String,
 }
 
-async fn authority(state: &AppState, workspace: &str) -> Result<Authority, ApiError> {
+pub(super) async fn assigned_context(
+    state: &AppState,
+    workspace: &str,
+) -> Result<(Uuid, Value), ApiError> {
     if state.managed_guest.is_some()
         || !std::path::Path::new(workspace).is_absolute()
         || workspace.len() > 4096
@@ -173,6 +176,11 @@ async fn authority(state: &AppState, workspace: &str) -> Result<Authority, ApiEr
             "Current approved local session required",
         ));
     }
+    Ok((session, value))
+}
+
+async fn authority(state: &AppState, workspace: &str) -> Result<Authority, ApiError> {
+    let (session, value) = assigned_context(state, workspace).await?;
     let identity = acp_machine::context_view(&value, session);
     Ok(Authority {
         session,

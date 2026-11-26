@@ -6,7 +6,8 @@ repo="$(cd "$(dirname "$0")/.." && pwd)"
 scratch="$(mktemp -d)"
 trap 'rm -rf -- "$scratch"' EXIT
 mkdir "$scratch/packages" "$scratch/staging" "$scratch/author"
-cp -R "$repo/plugins/sdk" "$repo/plugins/reference" "$repo/plugins/github-issue" "$scratch/author/"
+cp -R "$repo/plugins/sdk" "$repo/plugins/reference" "$repo/plugins/github-issue" \
+    "$repo/plugins/json-lint" "$scratch/author/"
 target="$(rustc -vV | sed -n 's/^host: //p')"
 (
     cd "$scratch/author/reference"
@@ -44,6 +45,26 @@ for package in packages.iterdir():
     manifest["executable_sha256"] = hashlib.sha256(executable.read_bytes()).hexdigest()
     (package / "manifest.json").write_text(json.dumps(manifest) + "\n")
 PY
+
+(
+    cd "$scratch/author/json-lint"
+    CARGO_TARGET_DIR="$scratch/build" cargo test --locked --offline
+    CARGO_TARGET_DIR="$scratch/build" RUSTFLAGS='-C target-feature=+crt-static' \
+        cargo build --release --locked --offline --target "$target"
+)
+mkdir "$scratch/packages/json-lint"
+install -m 600 "$scratch/build/$target/release/visor-json-lint" "$scratch/packages/json-lint/plugin"
+python3 - "$repo/plugins/json-lint/manifest.template.json" "$scratch/packages/json-lint" <<'PYTHON'
+import hashlib
+import json
+from pathlib import Path
+import sys
+
+template, package = map(Path, sys.argv[1:])
+manifest = json.loads(template.read_text())
+manifest["executable_sha256"] = hashlib.sha256((package / "plugin").read_bytes()).hexdigest()
+(package / "manifest.json").write_text(json.dumps(manifest) + "\n")
+PYTHON
 
 # Fail with the runner's namespace error before invoking the production guard,
 # which deliberately discards subprocess stderr.

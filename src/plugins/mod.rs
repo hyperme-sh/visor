@@ -268,7 +268,7 @@ impl Package {
         }
     }
 
-    fn metadata(&self) -> Value {
+    pub(crate) fn metadata(&self) -> Value {
         json!({
             "id": self.manifest.id,
             "package_version": self.manifest.package_version,

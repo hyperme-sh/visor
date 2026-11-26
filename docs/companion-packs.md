@@ -1,12 +1,14 @@
 # Visor companion packs
 
-Make a cat, dog, rabbit, robot, or original anime character by putting artwork and an optional voice in a folder. A single still image is enough. Add clips for more activities as you make them, and reuse any asset across cues. The Linux, Windows x64, and Apple Silicon macOS companions load the same packs at startup and when you select one in the menu.
+Make a cat, dog, rabbit, robot, or original anime character by putting artwork and an optional voice in a folder. A single still image is enough. Add clips for more activities as you make them, and reuse any asset across cues. The same packs work on Linux x86_64 and ARM64, Windows x64 and ARM64, and macOS on Apple Silicon and Intel. Visor loads them at startup and when you select one in the menu.
 
 ## Browse community packs
 
 Open **Companion packs → Browse community packs** to see each pack's author and
 license. Choose **Preview artwork** or **Play voice preview** when available.
-Linux opens artwork in its image viewer and plays audio through `aplay`.
+Linux opens artwork in its image viewer and plays audio through `aplay`. If
+`aplay` is missing on a source build or v0.3.0 installation, install the
+`alsa-utils` package for your distribution to enable previews and voice cues.
 Windows and macOS use native preview windows and audio.
 
 Choose **Download and install** to verify and install the selected revision.

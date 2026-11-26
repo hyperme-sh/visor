@@ -16,7 +16,7 @@ for state in idle automation disconnected; do
     cp "companion/assets/states/${state}_${frame}_128.png" "$output/Contents/Resources/companion/"
   done
 done
-swiftc -parse-as-library -D EMBEDDED_ENGINE -O -target "$(uname -m)-apple-macos$deployment" -import-objc-header native/macos/Engine.h native/macos/Desktop.swift native/macos/Engine.swift native/macos/CompanionPacks.swift \
+swiftc -parse-as-library -D EMBEDDED_ENGINE -O -target "$(uname -m)-apple-macos$deployment" -import-objc-header native/macos/Engine.h native/macos/Desktop.swift native/macos/Engine.swift native/macos/CompanionPacks.swift native/macos/CommunityPacks.swift \
   -L target/debug -lhypermesh_visor "$sdk/lib/libvisor_crash_sdk.a" -lc++ -lbsm -framework IOKit -framework Foundation -framework Security -framework SystemConfiguration \
   -framework CoreFoundation -lresolv -liconv -o "$output/Contents/MacOS/hypermesh-native-desktop"
 cat > "$output/Contents/Info.plist" <<PLIST

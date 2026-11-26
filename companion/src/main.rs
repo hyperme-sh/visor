@@ -26,6 +26,7 @@ mod mcp_status;
 mod mcp_trust;
 mod mcp_trust_gui;
 mod pack_picker;
+mod pack_catalog_dialog;
 mod pages;
 #[cfg(target_os = "linux")]
 mod plugins;

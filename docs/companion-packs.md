@@ -2,6 +2,23 @@
 
 Make a cat, dog, rabbit, robot, or original anime character by putting artwork and an optional voice in a folder. A single still image is enough. Add clips for more activities as you make them, and reuse any asset across cues. The Linux, Windows x64, and Apple Silicon macOS companions load the same packs at startup and when you select one in the menu.
 
+## Browse community packs
+
+Open **Companion packs → Browse community packs** to see each pack's author and
+license. Choose **Preview artwork** or **Play voice preview** when available.
+Linux opens artwork in its image viewer and plays audio through `aplay`.
+Windows and macOS use native preview windows and audio.
+
+Choose **Download and install** to verify and install the selected revision.
+Visor confirms before replacing a local copy. Select the downloaded pack in
+**Appearance** or **Voice** to start using it. The catalog, previews, and
+downloads connect to GitHub only when you ask for them. You can still select
+or remove installed packs offline. Removing a selected pack restores the bundled
+appearance or mute, as appropriate.
+
+To publish a community pack, open a pull request in the
+[contributor repository](https://github.com/hyperme-sh/companion-packs).
+
 ## Make and install a pack
 
 1. Create `companion-packs/moon-rabbit/` in your Hypermesh configuration directory. The default is `~/.config/hypermesh/` on Linux and macOS and `%LOCALAPPDATA%\HypermeshVisor` on Windows. Linux and macOS also use `$XDG_CONFIG_HOME/hypermesh/` if set. All three apps honor `HYPERMESH_CONFIG_DIR`.

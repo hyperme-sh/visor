@@ -1,4 +1,4 @@
-//! Offline picker for packs already in the local configuration directory.
+//! Installed pack choices and the entry point for browsing the community catalog.
 
 use std::path::Path;
 
@@ -18,6 +18,9 @@ pub enum Selection {
     Voice {
         id: String,
         voice: Voice,
+    },
+    Removed {
+        id: String,
     },
 }
 
@@ -45,10 +48,24 @@ fn pick(
     config: &Path,
     ui: &mut impl FnMut(&[String], Option<&str>) -> Result<Option<String>, String>,
 ) -> Result<Option<Selection>, String> {
-    let tracks = ["Appearance".to_owned(), "Voice".to_owned()];
+    let tracks = [
+        "Appearance",
+        "Voice",
+        "Browse community packs",
+        "Remove installed pack",
+    ]
+    .map(str::to_owned);
     let Some(track) = choose(ui, "Companion packs", "Choose what to change", &tracks)? else {
         return Ok(None);
     };
+    if track == 2 {
+        crate::pack_catalog_dialog::browse(config, ui)?;
+        return Ok(None);
+    }
+    if track == 3 {
+        return crate::pack_catalog_dialog::remove(config, ui)
+            .map(|id| id.map(|id| Selection::Removed { id }));
+    }
     let current = settings::presentation(config);
     let appearance = track == 0;
     let (default, selected) = if appearance {

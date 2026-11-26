@@ -256,6 +256,8 @@ mod platform;
 #[path = "companion_pack_windows.rs"]
 mod platform;
 
+pub(crate) use platform::open_root as open_pack_root;
+
 fn read_asset(parent: &platform::Directory, name: &str, limit: usize) -> io::Result<Vec<u8>> {
     let file = parent.asset(name)?;
     let info = file.metadata()?;
@@ -284,6 +286,7 @@ pub enum Medium {
 }
 
 pub fn installed(config: &Path, medium: Medium) -> Result<Vec<(String, String)>, String> {
+    crate::companion_catalog::recover_installs(config)?;
     let directory = config.join("companion-packs");
     let _root = match platform::open_root(config) {
         Ok(root) => root,

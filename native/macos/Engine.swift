@@ -122,7 +122,7 @@ private func desktopCallback(_ bytes: UnsafePointer<UInt8>?, _ count: Int, _ out
         sessions.target = self; menu.addItem(sessions)
         let packItem = NSMenuItem(title: "Companion packs", action: nil, keyEquivalent: "")
         let packMenu = NSMenu(title: "Companion packs")
-        for (index, title) in ["Appearance", "Voice"].enumerated() {
+        for (index, title) in ["Appearance", "Voice", "Browse community packs", "Remove installed pack"].enumerated() {
             let item = NSMenuItem(title: title, action: #selector(choosePack(_:)), keyEquivalent: "")
             item.target = self; item.tag = index; packMenu.addItem(item)
         }
@@ -221,10 +221,20 @@ private func desktopCallback(_ bytes: UnsafePointer<UInt8>?, _ count: Int, _ out
         selectingPack = true
         pause("Paused for companion pack selection")
         Task { @MainActor in
-            let saved = await packs.choose(item.tag == 0 ? "appearance" : "voice")
+            var failure: String?
+            do {
+                switch item.tag {
+                case 2: try await NativeCommunityPacks.browse(packs)
+                case 3: try await NativeCommunityPacks.remove(packs)
+                default:
+                    if await packs.choose(item.tag == 0 ? "appearance" : "voice") == false {
+                        failure = "The companion pack could not be loaded or saved."
+                    }
+                }
+            } catch { failure = error.localizedDescription }
             selectingPack = false
             if started {
-                if !saved { message = "The companion pack could not be loaded or saved." }
+                if let failure { message = failure }
                 update()
             }
         }

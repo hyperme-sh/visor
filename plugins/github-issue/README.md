@@ -19,7 +19,8 @@ the signed file at a root-owned path. Visor verifies it before listing or
 granting it. The image owns updates to the bundled package. An existing
 owner-installed package with the same ID retains precedence.
 
-The image-owned worker installs a syscall allowlist before reading input. The
+Visor loads the image-owned worker from a sealed in-memory file. The worker
+installs a syscall allowlist before reading input. The
 worker can use its standard I/O pipes and memory. Visor handles provider
 requests, which require explicit GitHub egress for live reads. CI exercises
 both native images under the standard network-free Compose profile using a

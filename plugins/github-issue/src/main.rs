@@ -11,6 +11,7 @@ fn main() -> std::io::Result<()> {
     let sandboxed = mode.as_deref().is_some_and(|arg| arg == "--sandbox-v1");
     if sandboxed {
         sandbox::install()?;
+        sandbox::verify()?;
         let mut stdout = std::io::stdout().lock();
         stdout.write_all(b"{\"sandbox\":1}\n")?;
         stdout.flush()?;
@@ -18,7 +19,6 @@ fn main() -> std::io::Result<()> {
     }
     match mode.as_deref() {
         Some(arg) if arg == "--code-mode-v1" => return code::run(),
-        Some(arg) if arg == "--sandbox-probe-v1" && sandboxed => return sandbox::probe(),
         Some(arg) if arg == "--third-party-notices" => {
             return std::io::stdout()
                 .lock()

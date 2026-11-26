@@ -93,15 +93,20 @@ pub(crate) fn install() -> io::Result<()> {
     Err(io::ErrorKind::Unsupported.into())
 }
 
-pub(crate) fn probe() -> io::Result<()> {
-    let filesystem = std::fs::File::open("/etc/os-release");
-    let tcp = std::net::TcpListener::bind("127.0.0.1:0");
-    let child = std::process::Command::new("/bin/true").status();
-    if filesystem.is_ok() || tcp.is_ok() || child.is_ok() {
-        return Err(io::Error::other(
-            "bundled worker sandbox allowed external access",
-        ));
+pub(crate) fn verify() -> io::Result<()> {
+    let denied = [
+        std::fs::File::open("/etc/os-release").err(),
+        std::net::TcpListener::bind("127.0.0.1:0").err(),
+        std::process::Command::new("/bin/true").status().err(),
+    ];
+    if denied.iter().all(|result| {
+        result
+            .as_ref()
+            .is_some_and(|err| err.kind() == io::ErrorKind::PermissionDenied)
+    }) {
+        return Ok(());
     }
-    use std::io::Write;
-    std::io::stdout().lock().write_all(b"{\"confined\":true}\n")
+    Err(io::Error::other(
+        "bundled worker sandbox did not confirm external access was denied",
+    ))
 }

@@ -5,7 +5,7 @@ use std::{
     fs::File,
     io::Write,
     os::fd::{AsRawFd, FromRawFd},
-    os::unix::fs::MetadataExt,
+    os::unix::fs::{FileExt, MetadataExt},
     path::Path,
     process::Stdio,
     time::{Duration, Instant},
@@ -108,6 +108,20 @@ fn sealed_worker(bytes: &[u8]) -> Result<File, Error> {
         || unsafe { libc::fcntl(fd, libc::F_ADD_SEALS, seals) } != 0
     {
         return Err(Error::Unavailable);
+    }
+    // Authentication must cover the frozen bytes, including during staging.
+    if file.metadata().map_err(|_| Error::Unavailable)?.len() != bytes.len() as u64 {
+        return Err(Error::Unavailable);
+    }
+    const BLOCK: usize = 8192;
+    let mut buffer = [0; BLOCK];
+    for (index, chunk) in bytes.chunks(BLOCK).enumerate() {
+        let read = &mut buffer[..chunk.len()];
+        file.read_exact_at(read, (index * BLOCK) as u64)
+            .map_err(|_| Error::Unavailable)?;
+        if read != chunk {
+            return Err(Error::Unavailable);
+        }
     }
     Ok(file)
 }

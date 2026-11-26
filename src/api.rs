@@ -65,6 +65,8 @@ pub struct AppState {
     tasks: tasks::Queue,
     #[cfg(target_os = "linux")]
     plugins: Mutex<crate::plugins::Grants>,
+    #[cfg(target_os = "linux")]
+    plugin_store: Mutex<Option<crate::plugins::store::Store>>,
     coding_status: Mutex<serde_json::Value>,
     forum_publications: Mutex<HashMap<Uuid, remote_bot::Publication>>,
     forum_reporter_exchange: tokio::sync::Mutex<()>,
@@ -195,6 +197,8 @@ impl AppState {
             tasks: tasks::Queue::new(),
             #[cfg(target_os = "linux")]
             plugins: Mutex::default(),
+            #[cfg(target_os = "linux")]
+            plugin_store: Mutex::default(),
             coding_status: Mutex::new(serde_json::json!({})),
             forum_publications: Mutex::new(HashMap::new()),
             forum_reporter_exchange: tokio::sync::Mutex::new(()),

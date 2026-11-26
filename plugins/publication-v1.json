@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Visor plugin publication v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["statement", "signature", "manifest", "executable"],
+  "properties": {
+    "statement": {"type": "string", "contentEncoding": "base64", "contentMediaType": "application/json"},
+    "signature": {"type": "string", "contentEncoding": "base64", "maxLength": 88},
+    "manifest": {"type": "string", "contentEncoding": "base64", "contentMediaType": "application/json"},
+    "executable": {"type": "string", "contentEncoding": "base64"}
+  },
+  "$defs": {
+    "statement": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["version", "plugin_id", "package_version", "source", "manifest_sha256", "publisher_key"],
+      "properties": {
+        "version": {"const": 1},
+        "plugin_id": {"type": "string"},
+        "package_version": {"type": "string"},
+        "source": {"type": "string", "format": "uri", "pattern": "^https://"},
+        "manifest_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "publisher_key": {"type": "string", "contentEncoding": "base64", "maxLength": 44},
+        "publisher_domain": {"type": ["string", "null"]}
+      }
+    },
+    "publisherAuthority": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["version", "keys"],
+      "properties": {
+        "version": {"const": 1},
+        "keys": {"type": "array", "maxItems": 16, "items": {"type": "string", "contentEncoding": "base64", "maxLength": 44}}
+      }
+    }
+  }
+}

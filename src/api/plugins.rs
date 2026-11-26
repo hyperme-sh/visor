@@ -1,6 +1,10 @@
 //! Plugin control stays on the same private companion transport as workspace reads.
 use super::*;
 use crate::{local_reads as reads, plugins as plugin};
+use plugin::{
+    publication::{Error as PublicationError, Publication},
+    store::Store,
+};
 use serde_json::{json, Value};
 
 static INSTALLS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(2);
@@ -8,6 +12,9 @@ static CALLS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(4);
 
 pub(super) fn routes() -> Router<Arc<AppState>> {
     Router::new()
+        .route("/plugins", get(installed_list).post(install))
+        .route("/plugins/inspect", post(inspect))
+        .route("/plugins/:plugin", delete(remove).put(set_enabled))
         .route("/session/:id/plugins", get(list).post(enable))
         .route("/session/:id/plugins/:plugin", delete(disable))
         .route("/session/:id/plugins/:plugin/call", post(call))
@@ -24,11 +31,196 @@ fn error(error: plugin::Error) -> Value {
     json!({"error":{"code":error.code(),"message":error.to_string()}})
 }
 
+fn publication_error(error: PublicationError) -> Response {
+    let status = match error {
+        PublicationError::Missing => StatusCode::NOT_FOUND,
+        PublicationError::Disabled | PublicationError::Changed => StatusCode::CONFLICT,
+        PublicationError::Publisher => StatusCode::FORBIDDEN,
+        PublicationError::Storage => StatusCode::SERVICE_UNAVAILABLE,
+        _ => StatusCode::BAD_REQUEST,
+    };
+    (
+        status,
+        Json(json!({"error":{"code":error.code(),"message":error.message()}})),
+    )
+        .into_response()
+}
+
+fn with_store<T>(
+    state: &AppState,
+    run: impl FnOnce(&Store) -> Result<T, PublicationError>,
+) -> Result<T, PublicationError> {
+    let mut store = lock(&state.plugin_store);
+    if store.is_none() {
+        *store = Some(Store::open(&state.mcp_dir)?);
+    }
+    run(store.as_ref().expect("store was initialized"))
+}
+
+async fn publication_task(
+    work: impl FnOnce() -> Result<Response, PublicationError> + Send + 'static,
+) -> Response {
+    match tokio::task::spawn_blocking(work).await {
+        Ok(Ok(response)) => response,
+        Ok(Err(error)) => publication_error(error),
+        Err(_) => publication_error(PublicationError::Storage),
+    }
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct Enable {
+struct Inspect {
+    source: String,
+}
+
+async fn inspect(
+    State(state): State<Arc<AppState>>,
+    Extension(link): Extension<CompanionLink>,
+    Json(body): Json<Inspect>,
+) -> Result<Response, ApiError> {
+    private(link)?;
+    let permit = INSTALLS
+        .try_acquire()
+        .map_err(|_| ApiError::unavailable("Plugin installer busy"))?;
+    Ok(publication_task(move || {
+        let _permit = permit;
+        let package = Publication::read(&body.source, None)?;
+        with_store(&state, |store| {
+            let before = store.get(&package.metadata.id)?;
+            let added_access = package
+                .metadata
+                .added_access(before.as_ref().map(|entry| &entry.metadata));
+            Ok(Json(json!({
+                "publication":package.metadata,
+                "installed":before,
+                "added_or_changed_tools":added_access
+            }))
+            .into_response())
+        })
+    })
+    .await)
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Install {
+    source: String,
+    publication_sha256: String,
+    expected_revision: Option<Uuid>,
+}
+
+async fn install(
+    State(state): State<Arc<AppState>>,
+    Extension(link): Extension<CompanionLink>,
+    Json(body): Json<Install>,
+) -> Result<Response, ApiError> {
+    private(link)?;
+    let permit = INSTALLS
+        .try_acquire()
+        .map_err(|_| ApiError::unavailable("Plugin installer busy"))?;
+    Ok(publication_task(move || {
+        let _permit = permit;
+        let package = Publication::read(&body.source, Some(&body.publication_sha256))?;
+        let id = package.metadata.id.clone();
+        with_store(&state, |store| {
+            let mut grants = lock(&state.plugins);
+            let entry = store.install(package, body.expected_revision, || {
+                grants.revoke_plugin(&id)
+            })?;
+            let status = if body.expected_revision.is_some() {
+                StatusCode::OK
+            } else {
+                StatusCode::CREATED
+            };
+            Ok((status, Json(entry)).into_response())
+        })
+    })
+    .await)
+}
+
+async fn installed_list(
+    State(state): State<Arc<AppState>>,
+    Extension(link): Extension<CompanionLink>,
+) -> Result<Response, ApiError> {
+    private(link)?;
+    Ok(publication_task(move || {
+        with_store(&state, |store| {
+            Ok(Json(json!({"plugins":store.list()?})).into_response())
+        })
+    })
+    .await)
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Enabled {
+    expected_revision: Uuid,
+    enabled: bool,
+}
+
+async fn set_enabled(
+    State(state): State<Arc<AppState>>,
+    Extension(link): Extension<CompanionLink>,
+    Path(id): Path<String>,
+    Json(body): Json<Enabled>,
+) -> Result<Response, ApiError> {
+    private(link)?;
+    Ok(publication_task(move || {
+        with_store(&state, |store| {
+            let mut grants = lock(&state.plugins);
+            let entry = store.set_enabled(&id, body.expected_revision, body.enabled, || {
+                grants.revoke_plugin(&id)
+            })?;
+            Ok(Json(entry).into_response())
+        })
+    })
+    .await)
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Remove {
+    expected_revision: Uuid,
+}
+
+async fn remove(
+    State(state): State<Arc<AppState>>,
+    Extension(link): Extension<CompanionLink>,
+    Path(id): Path<String>,
+    Json(body): Json<Remove>,
+) -> Result<Response, ApiError> {
+    private(link)?;
+    Ok(publication_task(move || {
+        with_store(&state, |store| {
+            let mut grants = lock(&state.plugins);
+            store.remove(&id, body.expected_revision, || grants.revoke_plugin(&id))?;
+            Ok(StatusCode::NO_CONTENT.into_response())
+        })
+    })
+    .await)
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum Enable {
+    Local(LocalEnable),
+    Installed(InstalledEnable),
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LocalEnable {
     manifest: PathBuf,
     manifest_sha256: String,
+    tool: String,
+    target: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct InstalledEnable {
+    plugin_id: String,
+    revision: Uuid,
     tool: String,
     target: String,
 }
@@ -44,32 +236,49 @@ async fn enable(
     if !state.has_session(id) {
         return Err(ApiError::missing());
     }
-    if body.target.len() > 4096 || !std::path::Path::new(&body.target).is_absolute() {
+    let target = match &body {
+        Enable::Local(body) => &body.target,
+        Enable::Installed(body) => &body.target,
+    };
+    if target.len() > 4096 || !std::path::Path::new(target).is_absolute() {
         return Err(ApiError::bad("An exact workspace file target is required"));
     }
     let permit = INSTALLS
         .try_acquire()
-        .map_err(|_| ApiError::unavailable("Plugin installation busy"))?;
+        .map_err(|_| ApiError::unavailable("Plugin installer busy"))?;
     let result = tokio::task::spawn_blocking(move || {
         let _permit = permit;
-        let loaded = plugin::Package::load(&body.manifest, &body.manifest_sha256, &body.tool);
-        let package = match loaded {
-            Ok(package) => package,
-            Err(e) => return Ok((StatusCode::BAD_REQUEST, Json(error(e))).into_response()),
-        };
-        // Hold session membership through insertion so close cannot miss a grant.
-        let sessions = lock(&state.sessions);
-        if !sessions.contains_key(&id) {
-            return Err(ApiError::missing());
-        }
-        let metadata = lock(&state.plugins)
-            .install(id, package, body.target)
-            .ok_or_else(|| ApiError::conflict("Plugin already enabled or grant limit reached"))?;
-        Ok((StatusCode::CREATED, Json(metadata)).into_response())
+        with_store(&state, |store| {
+            let (package, target) = match body {
+                Enable::Local(body) => {
+                    let package =
+                        plugin::Package::load(&body.manifest, &body.manifest_sha256, &body.tool)?;
+                    if store.get(package.key())?.is_some() {
+                        return Err(PublicationError::Changed);
+                    }
+                    (package, body.target)
+                }
+                Enable::Installed(body) => (
+                    store.activate(&body.plugin_id, body.revision, &body.tool)?,
+                    body.target,
+                ),
+            };
+            // Keep membership and the installed revision stable until insertion.
+            let sessions = lock(&state.sessions);
+            if !sessions.contains_key(&id) {
+                return Ok(ApiError::missing().into_response());
+            }
+            let metadata = lock(&state.plugins).install(id, package, target);
+            Ok(match metadata {
+                Some(metadata) => (StatusCode::CREATED, Json(metadata)).into_response(),
+                None => ApiError::conflict("Plugin already enabled or grant limit reached")
+                    .into_response(),
+            })
+        })
     })
     .await
-    .map_err(|_| ApiError::unavailable("Plugin installation unavailable"))?;
-    result
+    .map_err(|_| ApiError::unavailable("Plugin activation unavailable"))?;
+    Ok(result.unwrap_or_else(publication_error))
 }
 
 async fn list(

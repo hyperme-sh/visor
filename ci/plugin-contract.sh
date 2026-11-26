@@ -85,5 +85,8 @@ for mode, expected in {
     assert not list((scratch / "staging").iterdir()), mode
     print(f"{mode}: passed")
 PY
-VISOR_PLUGIN_CONTRACT_DIR="$scratch/packages" cargo test --locked --no-default-features --features headless --lib \
+openssl genpkey -algorithm Ed25519 -out "$scratch/author-key.pem"
+python3 plugins/publish.py --package "$scratch/packages/current" --key "$scratch/author-key.pem" \
+    --source https://packages.example.org/byte-count.visor-plugin --output "$scratch/author.visor-plugin"
+VISOR_PLUGIN_PUBLICATION="$scratch/author.visor-plugin" VISOR_PLUGIN_CONTRACT_DIR="$scratch/packages" cargo test --locked --no-default-features --features headless --lib \
     api::tests::plugin_contract::independent_package_uses_owner_admission -- --ignored --exact

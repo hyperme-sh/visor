@@ -9,7 +9,7 @@ internal static class CommunityPacks
     {
         var catalog = await Progress(owner, "Loading community packs…", new { action = "pack-catalog-list" });
         if (owner.IsDisposed) return;
-        var entries = catalog.GetProperty("packs").EnumerateArray().ToArray();
+        var entries = Entries(catalog);
         if (entries.Length == 0) { Notice(owner, "No community packs are listed."); return; }
         var labels = entries.Select(entry => $"{Safe(entry, "name")} — {Safe(entry, "author")} ({Safe(entry, "license")})").ToArray();
         int choice = Choose(owner, "Community packs", labels);
@@ -70,6 +70,8 @@ internal static class CommunityPacks
 
     private static string Safe(JsonElement entry, string key) => McpTrustWindow.Safe(entry.GetProperty(key).GetString()!);
 
+    private static JsonElement[] Entries(JsonElement catalog) => catalog.GetProperty("packs").EnumerateArray().ToArray();
+
     private static JsonElement Checked(JsonElement? response)
     {
         if (response is not { } body) throw new InvalidOperationException("The companion pack request failed.");
@@ -113,11 +115,40 @@ internal static class CommunityPacks
 
     private static void ShowArt(Form owner, string title, byte[] bytes)
     {
-        using var buffer = new MemoryStream(bytes, writable: false);
-        using var image = Image.FromStream(buffer, useEmbeddedColorManagement: false, validateImageData: true);
+        using var image = DecodeArt(bytes);
         using var dialog = new Form { Text = title, Width = 355, Height = 455,
             StartPosition = FormStartPosition.CenterParent, ShowInTaskbar = false };
         dialog.Controls.Add(new PictureBox { Dock = DockStyle.Fill, SizeMode = PictureBoxSizeMode.Zoom, Image = image });
         dialog.ShowDialog(owner);
+    }
+
+    private static Bitmap DecodeArt(byte[] bytes)
+    {
+        using var buffer = new MemoryStream(bytes, writable: false);
+        using var image = Image.FromStream(buffer, useEmbeddedColorManagement: false, validateImageData: true);
+        return new Bitmap(image);
+    }
+
+    internal static void CheckContract(string responsePath)
+    {
+        using var response = JsonDocument.Parse(File.ReadAllBytes(responsePath));
+        var data = response.RootElement;
+        var entries = Entries(data.GetProperty("catalog"));
+        foreach (string id in new[] { "ember-cat", "scout-dog", "clover-rabbit", "visor-beetle" })
+        {
+            var entry = entries.Single(item => item.GetProperty("id").GetString() == id);
+            var preview = data.GetProperty("previews").GetProperty(id);
+            using var art = DecodeArt(preview.GetProperty("art").GetBytesFromBase64());
+            if (art.Width != 400 || art.Height != 520 || Safe(entry, "name").Length == 0)
+                throw new InvalidOperationException($"Invalid catalog artwork for {id}");
+            if (id != "visor-beetle")
+            {
+                using var wave = new MemoryStream(preview.GetProperty("voice").GetBytesFromBase64(), writable: false);
+                using var player = new SoundPlayer(wave);
+                player.Load();
+            }
+        }
+        CompanionPacks.CheckCatalogPair(data.GetProperty("appearance"), data.GetProperty("voice"), data.GetProperty("cues"));
+        Console.WriteLine("PASS community pack catalog artwork, voice previews, and Beetle with Clover Rabbit voice");
     }
 }

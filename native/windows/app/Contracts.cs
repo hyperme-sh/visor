@@ -11,6 +11,8 @@ internal static class Contracts
     {
         try
         {
+            if (Environment.GetEnvironmentVariable("HYPERMESH_CATALOG_CONTRACT_OUTPUT") is { } responsePath)
+                CommunityPacks.CheckContract(responsePath);
             Require(CompanionPacks.FrameIndex(2, 40, true, 80, false) == 0);
             Require(CompanionPacks.FrameIndex(2, 40, false, 80, false) == 1);
             Require(CompanionPacks.FrameIndex(2, 40, false, 80, true) == 0);

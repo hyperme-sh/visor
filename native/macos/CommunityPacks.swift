@@ -8,10 +8,7 @@ private struct PackOperationError: LocalizedError {
 @MainActor enum NativeCommunityPacks {
     static func browse(_ packs: NativeCompanionPacks) async throws {
         let catalog = try await request(["action": "pack-catalog-list"], progress: "Loading community packs…")
-        guard let revision = catalog["asset_revision"] as? String,
-              let entries = catalog["packs"] as? [[String: Any]] else {
-            throw PackOperationError(message: "The community catalog is unavailable.")
-        }
+        let (revision, entries) = try listing(catalog)
         let labels = entries.map {
             "\(safe($0, "name")) — \(safe($0, "author")) (\(safe($0, "license")))"
         }
@@ -98,6 +95,14 @@ private struct PackOperationError: LocalizedError {
         nativeMcpSafe(entry[key] as? String ?? "")
     }
 
+    private static func listing(_ catalog: [String: Any]) throws -> (String, [[String: Any]]) {
+        guard let revision = catalog["asset_revision"] as? String,
+              let entries = catalog["packs"] as? [[String: Any]] else {
+            throw PackOperationError(message: "The community catalog is unavailable.")
+        }
+        return (revision, entries)
+    }
+
     private static func choose(_ title: String, _ items: [String]) -> Int? {
         let alert = NSAlert()
         alert.messageText = title
@@ -124,7 +129,7 @@ private struct PackOperationError: LocalizedError {
     }
 
     private static func showArt(_ title: String, _ data: Data) throws {
-        guard let image = NSImage(data: data) else { throw PackOperationError(message: "The artwork preview could not be shown.") }
+        let image = try decodeArt(data)
         let view = NSImageView(frame: NSRect(x: 0, y: 0, width: 280, height: 364))
         view.imageScaling = .scaleProportionallyUpOrDown; view.image = image
         let alert = NSAlert()
@@ -132,5 +137,35 @@ private struct PackOperationError: LocalizedError {
         alert.accessoryView = view
         alert.addButton(withTitle: "Close")
         alert.runModal()
+    }
+
+    private static func decodeArt(_ data: Data) throws -> NSImage {
+        guard let image = NSImage(data: data) else { throw PackOperationError(message: "The artwork preview could not be shown.") }
+        return image
+    }
+
+    static func checkContract(_ path: String) throws {
+        let data = try Data(contentsOf: URL(fileURLWithPath: path))
+        guard let fixture = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let catalog = fixture["catalog"] as? [String: Any],
+              let previews = fixture["previews"] as? [String: [String: Any]] else {
+            throw PackOperationError(message: "Invalid catalog response fixture")
+        }
+        let (_, entries) = try listing(catalog)
+        for id in ["ember-cat", "scout-dog", "clover-rabbit", "visor-beetle"] {
+            guard let entry = entries.first(where: { $0["id"] as? String == id }),
+                  let preview = previews[id], let art = preview["art"] as? String,
+                  let picture = Data(base64Encoded: art) else {
+                throw PackOperationError(message: "Missing preview for \(id)")
+            }
+            let image = try decodeArt(picture)
+            try verifyNativeUnit(!safe(entry, "name").isEmpty && image.size == NSSize(width: 400, height: 520))
+            if id != "visor-beetle" {
+                let sound = (preview["voice"] as? String).flatMap { Data(base64Encoded: $0) }.flatMap { NSSound(data: $0) }
+                try verifyNativeUnit((sound?.duration ?? 0) > 0)
+            }
+        }
+        try NativeCompanionPacks.checkCatalogPair(data)
+        print("PASS community pack catalog artwork, voice previews, and Beetle with Clover Rabbit voice")
     }
 }

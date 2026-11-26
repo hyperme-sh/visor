@@ -197,6 +197,23 @@ internal sealed class CompanionPacks : IDisposable
         return (int)(loop ? step % count : Math.Min(step, count - 1));
     }
 
+    internal static void CheckCatalogPair(JsonElement art, JsonElement audio, JsonElement cue)
+    {
+        using var appearance = new Appearance(art);
+        var voice = new Voice(audio);
+        string[] keys = cue.GetProperty("keys").EnumerateArray().Select(key => key.GetString()!).ToArray();
+        var clip = appearance.Select(keys);
+        string? recording = voice.Select(keys);
+        if (Text(art, "id") != "visor-beetle" || Text(audio, "id") != "clover-rabbit"
+            || clip?.Frames.Length != 8 || clip.Frame(0, false).Width != 128
+            || appearance.Cursor(Text(cue, "cursor"))?.Width != 32
+            || recording != "working.wav" || voice.Audio(recording) is not { } bytes)
+            throw new InvalidOperationException("Visor Beetle and Clover Rabbit did not resolve together");
+        using var wave = new MemoryStream(bytes, writable: false);
+        using var player = new SoundPlayer(wave);
+        player.Load();
+    }
+
     private sealed record Clip(Bitmap[] Frames, long Interval, bool Loop)
     {
         internal Bitmap Frame(long age, bool reduced) => Frames[FrameIndex(Frames.Length, Interval, Loop, age, reduced)];

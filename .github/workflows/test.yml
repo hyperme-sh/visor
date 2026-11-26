@@ -93,7 +93,21 @@ jobs:
         env:
           HYPERMESH_CRASH_SDK_PATH: ${{ runner.temp }}/visor-crash-sdk
         run: ./native/windows/build-development.ps1
+      - name: Check out the published community pack fixture
+        uses: actions/checkout@v7.0.1
+        with:
+          repository: hyperme-sh/companion-packs
+          ref: 8940a44fb026224b563b0a732fbc69920f54dc4b
+          path: .ci-fixtures/companion-catalog
+          persist-credentials: false
+      - name: Catalog browse, preview, install, and offline pairing contract
+        env:
+          HYPERMESH_CATALOG_FIXTURE: ${{ github.workspace }}/.ci-fixtures/companion-catalog
+          HYPERMESH_CATALOG_CONTRACT_OUTPUT: ${{ runner.temp }}/companion-catalog-responses.json
+        run: cargo test --locked --lib companion_catalog::published_contract::published_packs_native_contract -- --ignored --exact
       - name: Native companion unit contracts (no desktop opened)
+        env:
+          HYPERMESH_CATALOG_CONTRACT_OUTPUT: ${{ runner.temp }}/companion-catalog-responses.json
         run: |
           $exe = Join-Path $pwd 'dist/windows-development/hypermesh-native-desktop.exe'
           $stdout = Join-Path $env:RUNNER_TEMP 'visor-native-contract.stdout'
@@ -483,7 +497,21 @@ jobs:
         env:
           HYPERMESH_CRASH_SDK_PATH: ${{ runner.temp }}/visor-crash-sdk
         run: bash native/macos/package-development.sh "$RUNNER_TEMP/visor-distribution"
+      - name: Check out the published community pack fixture
+        uses: actions/checkout@v7.0.1
+        with:
+          repository: hyperme-sh/companion-packs
+          ref: 8940a44fb026224b563b0a732fbc69920f54dc4b
+          path: .ci-fixtures/companion-catalog
+          persist-credentials: false
+      - name: Catalog browse, preview, install, and offline pairing contract
+        env:
+          HYPERMESH_CATALOG_FIXTURE: ${{ github.workspace }}/.ci-fixtures/companion-catalog
+          HYPERMESH_CATALOG_CONTRACT_OUTPUT: ${{ runner.temp }}/companion-catalog-responses.json
+        run: cargo test --locked --lib companion_catalog::published_contract::published_packs_native_contract -- --ignored --exact
       - name: Native event mapping and unauthenticated bridge refusal
+        env:
+          HYPERMESH_CATALOG_CONTRACT_OUTPUT: ${{ runner.temp }}/companion-catalog-responses.json
         run: |
           "$RUNNER_TEMP/visor-distribution/hypermesh-visor-macos-arm64/Hypermesh Visor Development.app/Contents/MacOS/hypermesh-native-desktop" --self-test
           python3 native/macos/test-bridge-refusal.py "$RUNNER_TEMP/visor-distribution/hypermesh-visor-macos-arm64/Hypermesh Visor Development.app/Contents/MacOS/hypermesh-native-desktop"

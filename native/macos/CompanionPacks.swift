@@ -217,11 +217,8 @@ func nativePackFrameIndex(count: Int, interval: UInt64, loop: Bool, elapsed: UIn
             }
             if let cue = packRequest(fields, as: PackCues.self) {
                 if resolved != signal {
-                    resolved = signal; label = cue.label
-                    let keys = cue.keys.map { Data($0.utf8) }
-                    let next = keys.first { clips[$0] != nil }
-                    if clipKey != next { clipKey = next; clipAt = now }
-                    selectAudio(keys.lazy.compactMap { self.cues[$0] }.first { recordings[$0] != nil })
+                    resolved = signal
+                    resolve(cue, now: now)
                 }
                 if let key = cue.cursor { cursor = cursorArt[key] ?? cursorArt["pointer"] }
             } else {
@@ -238,6 +235,33 @@ func nativePackFrameIndex(count: Int, interval: UInt64, loop: Bool, elapsed: UIn
                 loop: clip.loop, elapsed: now - clipAt, reduced: reduced)]
         }
         return (art, cursor)
+    }
+
+    private func resolve(_ cue: PackCues, now: UInt64) {
+        label = cue.label
+        let keys = cue.keys.map { Data($0.utf8) }
+        let next = keys.first { clips[$0] != nil }
+        if clipKey != next { clipKey = next; clipAt = now }
+        selectAudio(keys.lazy.compactMap { self.cues[$0] }.first { recordings[$0] != nil })
+    }
+
+    static func checkCatalogPair(_ data: Data) throws {
+        struct Fixture: Decodable {
+            let appearance: PackBundle
+            let voice: PackBundle
+            let cues: PackCues
+        }
+        let fixture = try JSONDecoder().decode(Fixture.self, from: data)
+        let packs = NativeCompanionPacks()
+        packs.apply(fixture.appearance, medium: "appearance")
+        packs.apply(fixture.voice, medium: "voice")
+        packs.resolve(fixture.cues, now: Self.clock)
+        let art = packs.clipKey.flatMap { packs.clips[$0] }
+        let cursor = fixture.cues.cursor.flatMap { packs.cursorArt[$0] }
+        let sound = packs.selectedAudio.flatMap { packs.recordings[$0] }.flatMap { NSSound(data: $0) }
+        try verifyNativeUnit(fixture.appearance.id == "visor-beetle" && art?.frames.count == 8)
+        try verifyNativeUnit(cursor?.size == NSSize(width: 32, height: 32))
+        try verifyNativeUnit(fixture.voice.id == "clover-rabbit" && packs.selectedAudio == "working.wav" && (sound?.duration ?? 0) > 0)
     }
 
     private func selectAudio(_ key: String?) {

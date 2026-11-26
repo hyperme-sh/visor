@@ -1,0 +1,171 @@
+//! Native request contract against the immutable first animal-pack catalog.
+
+use super::*;
+use serde_json::{json, Map, Value};
+use std::cell::RefCell;
+
+const SOURCE: &str = "12e6bc4dcf8a7daa8a079f409865a7e03510040a";
+const ASSETS: &str = "16e0a37d2e287a8766452355fad1742c2389d2b1";
+
+enum Transport {
+    Network,
+    Fixture(PathBuf),
+    Offline,
+}
+
+thread_local! {
+    static DOWNLOAD: RefCell<Transport> = const { RefCell::new(Transport::Network) };
+}
+
+pub(super) fn read_fixture(path: &str, limit: usize) -> Option<Result<Vec<u8>, String>> {
+    DOWNLOAD.with_borrow(|transport| match transport {
+        Transport::Network => None,
+        Transport::Offline => panic!("an offline pack request tried to fetch {path}"),
+        Transport::Fixture(root) => Some((|| {
+            let asset_path = if path == "catalog/catalog.json" {
+                root.join("catalog.json")
+            } else {
+                let name = path
+                    .strip_prefix(ASSETS)
+                    .and_then(|path| path.strip_prefix("/packs/"))
+                    .filter(|name| safe_filename(name))
+                    .ok_or_else(|| format!("unexpected fixture request: {path}"))?;
+                root.join("packs").join(name)
+            };
+            let mut bytes = Vec::new();
+            File::open(&asset_path)
+                .and_then(|file| file.take(limit as u64 + 1).read_to_end(&mut bytes))
+                .map_err(|error| format!("reading {}: {error}", asset_path.display()))?;
+            if bytes.len() > limit {
+                return Err(format!("fixture response exceeds the limit: {path}"));
+            }
+            Ok(bytes)
+        })()),
+    })
+}
+
+#[test]
+#[ignore = "requires the published catalog fixture checked out by native CI"]
+fn published_packs_native_contract() {
+    let fixture = std::env::var_os("HYPERMESH_CATALOG_FIXTURE").expect("CI catalog fixture path");
+    let output = std::env::var_os("HYPERMESH_CATALOG_CONTRACT_OUTPUT").expect("CI response path");
+    DOWNLOAD.set(Transport::Fixture(fixture.into()));
+    let config = Staging::new(&std::env::temp_dir()).unwrap();
+    let send = |input: Value| {
+        let response = crate::native_pack::request(&config.0, input.clone());
+        assert_eq!(response["status"], 200, "{input}");
+        assert!(
+            serde_json::to_vec(&response).unwrap().len() <= crate::native_pack::MAX_RESPONSE_BYTES
+        );
+        response.get("body").unwrap().clone()
+    };
+    let request = |input| {
+        let body = send(input);
+        assert!(body.get("error").is_none(), "{body}");
+        body
+    };
+    let listing = request(json!({"action":"pack-catalog-list"}));
+    assert_eq!(listing["source_revision"], SOURCE);
+    assert_eq!(listing["asset_revision"], ASSETS);
+    let entries = listing["packs"].as_array().unwrap();
+    let mut previews = Map::new();
+    for (id, name, license, voice_expected) in [
+        ("ember-cat", "Ember Cat", "CC0-1.0", true),
+        ("scout-dog", "Scout Dog", "CC0-1.0", true),
+        ("clover-rabbit", "Clover Rabbit", "CC0-1.0", true),
+        ("visor-beetle", "Visor Beetle", "MIT", false),
+    ] {
+        let entry = entries.iter().find(|entry| entry["id"] == id).expect(id);
+        assert_eq!(entry["name"], name);
+        assert_eq!(entry["license"], license);
+        assert_eq!(entry["installed"], false);
+        let preview = |medium| {
+            request(json!({"action":"pack-catalog-preview", "entry":entry,
+                                               "revision":ASSETS, "medium":medium}))
+        };
+        let art = preview("art")["media"].clone();
+        let decode = |value: &Value| STANDARD.decode(value.as_str().unwrap()).unwrap();
+        packs::read_png(&decode(&art), Some(packs::SPRITE_SIZE)).unwrap();
+        let voice = if voice_expected {
+            let wave = preview("voice")["media"].clone();
+            let pcm = packs::decode_wave(&decode(&wave)).unwrap();
+            assert!(
+                pcm.pcm.iter().any(|&byte| byte != 0),
+                "{id} preview is silent"
+            );
+            wave
+        } else {
+            assert!(entry["voice_preview"].is_null());
+            Value::Null
+        };
+        previews.insert(id.into(), json!({"art":art,"voice":voice}));
+
+        let install = |entry: &Value| {
+            send(json!({"action":"pack-catalog-install", "entry":entry,
+                                                   "revision":ASSETS, "replace":false}))
+        };
+        if id == "ember-cat" {
+            let mut wrong_digest = entry.clone();
+            wrong_digest["archive"]["sha256"] = json!("0".repeat(64));
+            assert!(install(&wrong_digest)["error"]
+                .as_str()
+                .unwrap()
+                .contains("SHA-256"));
+            assert!(!config.0.join("companion-packs").join(id).exists());
+        }
+        assert_eq!(install(entry)["changed"], true);
+    }
+    let refreshed = request(json!({"action":"pack-catalog-list"}));
+    for entry in refreshed["packs"].as_array().unwrap() {
+        assert_eq!(
+            entry["installed"],
+            previews.contains_key(entry["id"].as_str().unwrap())
+        );
+    }
+
+    DOWNLOAD.set(Transport::Offline);
+    let installed = request(json!({"action":"pack-list"}));
+    for (id, name) in [
+        ("ember-cat", "Ember Cat"),
+        ("scout-dog", "Scout Dog"),
+        ("clover-rabbit", "Clover Rabbit"),
+    ] {
+        let choice = json!([id, name]);
+        assert!(installed["appearance"]
+            .as_array()
+            .unwrap()
+            .contains(&choice));
+        assert!(installed["voice"].as_array().unwrap().contains(&choice));
+    }
+    let beetle = json!(["visor-beetle", "Visor Beetle"]);
+    assert!(installed["appearance"]
+        .as_array()
+        .unwrap()
+        .contains(&beetle));
+    assert!(!installed["voice"].as_array().unwrap().contains(&beetle));
+    for (medium, id) in [("appearance", "visor-beetle"), ("voice", "clover-rabbit")] {
+        let selected = request(json!({"action":"pack-select", "medium":medium, "id":id}));
+        assert_eq!(selected["id"], id);
+    }
+    assert_eq!(
+        request(json!({"action":"pack-list"}))["selected"],
+        json!({"appearance":"visor-beetle", "voice":"clover-rabbit"})
+    );
+    let appearance = request(json!({"action":"pack-load", "medium":"appearance"}));
+    let voice = request(json!({"action":"pack-load", "medium":"voice"}));
+    assert_eq!(appearance["id"], "visor-beetle");
+    assert_eq!(appearance["frames"].as_object().unwrap().len(), 38);
+    assert_eq!(appearance["cursor"].as_object().unwrap().len(), 12);
+    assert_eq!(voice["id"], "clover-rabbit");
+    assert_eq!(
+        voice["audio"]["working.wav"],
+        previews["clover-rabbit"]["voice"]
+    );
+    let cues = request(json!({"action":"pack-cues","state":"automation",
+                              "cursor":{"clock_ms":0,"reduced_motion":true}}));
+    assert_eq!(cues["keys"][0], "state:automation");
+    let responses = json!({"catalog":listing,"previews":previews,"appearance":appearance,
+                           "voice":voice,"cues":cues});
+    fs::write(output, serde_json::to_vec(&responses).unwrap()).unwrap();
+    DOWNLOAD.set(Transport::Network);
+}

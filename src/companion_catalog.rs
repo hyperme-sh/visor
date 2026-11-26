@@ -197,6 +197,10 @@ impl Asset {
 }
 
 fn get(path: &str, limit: usize) -> Result<Vec<u8>, String> {
+    #[cfg(test)]
+    if let Some(result) = published_contract::read_fixture(path, limit) {
+        return result;
+    }
     let response = ureq::AgentBuilder::new()
         .redirects(0)
         .try_proxy_from_env(false)
@@ -220,6 +224,10 @@ fn get(path: &str, limit: usize) -> Result<Vec<u8>, String> {
     }
     Ok(bytes)
 }
+
+#[cfg(test)]
+#[path = "companion_catalog_contract.rs"]
+mod published_contract;
 
 fn hex(value: &str, size: usize) -> bool {
     value.len() == size

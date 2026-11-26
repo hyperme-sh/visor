@@ -1,0 +1,26 @@
+[Unit]
+Description=Hypermesh Visor headless worker
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=exec
+User=visor
+Group=visor
+UMask=0077
+RuntimeDirectory=hypermesh-visor-headless
+RuntimeDirectoryMode=0700
+StateDirectory=hypermesh-visor-headless
+StateDirectoryMode=0700
+WorkingDirectory=/var/lib/hypermesh-visor-headless
+Environment=HYPERMESH_RUNTIME_DIR=/run/hypermesh-visor-headless
+Environment=HYPERMESH_SESSION_SECRET_FILE=/var/lib/hypermesh-visor-headless/session.json
+Environment=XDG_CONFIG_HOME=/var/lib/hypermesh-visor-headless
+EnvironmentFile=-/etc/hypermesh-visor-headless/worker.env
+ExecStart=/usr/bin/hypermesh-visor-headless
+NoNewPrivileges=yes
+PrivateTmp=yes
+TimeoutStopSec=25s
+
+[Install]
+WantedBy=multi-user.target

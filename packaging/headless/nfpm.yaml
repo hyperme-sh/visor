@@ -10,6 +10,11 @@ description: Headless Hypermesh daemon with bundled Conductor; no desktop depend
 homepage: https://github.com/hyperme-sh/hypermesh-visor
 license: MIT
 contents:
+  - src: packaging/headless/cloud-worker.service
+    dst: /usr/lib/systemd/system/hypermesh-visor-headless.service
+    packager: deb
+    file_info:
+      mode: 0644
   - src: src/tool_catalog/llama2c/LICENSE
     dst: /usr/share/doc/hypermesh-visor-headless/llama2c-LICENSE
     file_info:

@@ -57,6 +57,7 @@ ENTRYPOINT ["/usr/bin/hypermesh-visor-headless"]
 
 # Cloud worker uses the same headless .deb on stock Debian. No enrollment data
 # is a build input. Operators provide authority through existing local paths.
+FROM rust:1.90.0-bookworm@sha256:3914072ca0c3b8aad871db9169a651ccfce30cf58303e5d6f2db16d1d8a7e58f AS debian-trust
 FROM ${CLOUD_BASE} AS cloud-worker
 ARG CLOUD_BASE
 ARG DEBIAN_SNAPSHOT=20261102T000000Z
@@ -66,15 +67,15 @@ LABEL org.opencontainers.image.source="https://github.com/hyperme-sh/visor" \
       org.opencontainers.image.base.name="${CLOUD_BASE}" \
       sh.hyperme.visor.debian-snapshot="${DEBIAN_SNAPSHOT}" \
       sh.hyperme.visor.profile="base"
-COPY --from=runtime /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
+COPY --from=debian-trust /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
 COPY --from=build /output/*.deb /output/build.txt /output/checksums.txt /tmp/visor-package/
 COPY ci/cloud-worker/package-inventory.sh /usr/local/libexec/visor-package-inventory
 RUN set -eu; \
     rm -f /etc/apt/sources.list.d/debian.sources; \
     printf 'deb [check-valid-until=no] https://snapshot.debian.org/archive/debian/%s/ trixie main\ndeb [check-valid-until=no] https://snapshot.debian.org/archive/debian-security/%s/ trixie-security main\n' \
       "$DEBIAN_SNAPSHOT" "$DEBIAN_SNAPSHOT" > /etc/apt/sources.list; \
-    apt-get -o Acquire::ForceIPv4=true -o Acquire::https::Timeout=30 -o APT::Update::Error-Mode=any update; \
-    apt-get -o Acquire::ForceIPv4=true -o Acquire::https::Timeout=30 install -y --no-install-recommends ca-certificates; \
+    apt-get -o Acquire::ForceIPv4=true -o Acquire::https::Timeout=30 -o APT::Update::Error-Mode=any -o Acquire::https::CaInfo=/etc/ssl/certs/ca-certificates.crt update; \
+    apt-get -o Acquire::ForceIPv4=true -o Acquire::https::Timeout=30 -o Acquire::https::CaInfo=/etc/ssl/certs/ca-certificates.crt install -y --no-install-recommends ca-certificates; \
     cd /tmp/visor-package; \
     awk '$2 ~ /[.]deb$/ || $2 == "build.txt"' checksums.txt > cloud-checksums.txt; \
     test "$(wc -l < cloud-checksums.txt)" -eq 2; \
@@ -98,8 +99,8 @@ FROM cloud-worker AS cloud-coding
 USER root
 LABEL sh.hyperme.visor.profile="coding-v1"
 RUN set -eu; \
-    apt-get -o Acquire::ForceIPv4=true -o Acquire::https::Timeout=30 -o APT::Update::Error-Mode=any update; \
-    apt-get -o Acquire::ForceIPv4=true -o Acquire::https::Timeout=30 install -y --no-install-recommends git shellcheck; \
+    apt-get -o Acquire::ForceIPv4=true -o Acquire::https::Timeout=30 -o APT::Update::Error-Mode=any -o Acquire::https::CaInfo=/etc/ssl/certs/ca-certificates.crt update; \
+    apt-get -o Acquire::ForceIPv4=true -o Acquire::https::Timeout=30 -o Acquire::https::CaInfo=/etc/ssl/certs/ca-certificates.crt install -y --no-install-recommends git shellcheck; \
     rm -rf /var/lib/apt/lists/*; \
     sh /usr/local/libexec/visor-package-inventory
 USER 1000:1000

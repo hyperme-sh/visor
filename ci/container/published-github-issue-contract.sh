@@ -35,7 +35,7 @@ docker inspect --format 'Network={{.HostConfig.NetworkMode}} ReadOnly={{.HostCon
 
 # If the real daemon can run the plugin sandbox, exercise issue reads with the
 # existing loopback provider contract in that same container. The helper is
-# built from the image revision and is the only file copied into its tmpfs.
+# built from the image revision and is the only file staged in the test home.
 mkdir "$scratch/source"
 git archive "$revision" | tar -xf - -C "$scratch/source"
 (
@@ -51,9 +51,10 @@ for line in sys.stdin:
 ' > "$scratch/test-binary"
 test "$(wc -l < "$scratch/test-binary")" = 1
 read -r binary < "$scratch/test-binary"
-"${compose[@]}" exec -T writer sh -ec 'umask 077; cat > /tmp/plugin-ci-contract; chmod 0700 /tmp/plugin-ci-contract' < "$binary"
+helper=/home/bot/.local/state/hypermesh/plugin-ci-contract
+"${compose[@]}" exec -T writer sh -ec 'umask 077; cat > "$1"; chmod 0700 "$1"' sh "$helper" < "$binary"
 bundle=/usr/local/share/hypermesh-visor/plugins/github-issue.visor-plugin
 digest="$("${compose[@]}" exec -T writer sha256sum "$bundle" | cut -d ' ' -f 1)"
 "${compose[@]}" exec -T -e "VISOR_TEST_BUNDLED_GITHUB_ISSUE=$digest" writer \
-    /tmp/plugin-ci-contract --ignored --exact --nocapture \
+    "$helper" --ignored --exact --nocapture \
     api::tests::plugin_contract::github_issue_plugin_uses_the_selected_account_and_public_repository

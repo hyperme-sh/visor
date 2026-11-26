@@ -33,7 +33,22 @@ export interface VisorPromptNative extends VisorNative {
   submitPrompt(options: { operationId: string }): Promise<{ text: string }>;
   discardPrompt(options: { operationId: string }): Promise<void>;
 }
-const plugin = registerPlugin<VisorPromptNative & VisorFeedbackNative>('Visor');
+interface VisorAppInfo {
+  appInfo(): Promise<{ version: string; build: string }>;
+}
+const plugin = registerPlugin<VisorPromptNative & VisorFeedbackNative & VisorAppInfo>('Visor');
+
+export async function appVersionLabel(): Promise<string> {
+  if (!Capacitor.isNativePlatform()) return 'Web preview';
+  try {
+    const info = await plugin.appInfo();
+    const version = info.version?.trim();
+    const build = info.build?.trim();
+    if (version && build) return `Version ${version} · Build ${build}`;
+  } catch { /* Native metadata failure leaves the rest of the app available. */ }
+  return 'Version unavailable';
+}
+
 export function nativePromptClient(): VisorPromptNative {
   if (!Capacitor.isNativePlatform()) throw new Error('Open Visor in the mobile app.');
   return plugin;

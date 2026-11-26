@@ -109,3 +109,24 @@ workspace is unavailable.
 In a VS Code WSL window, install Hypermesh in the WSL extension host and set
 `hypermesh.companionExecutable` in **Remote Settings** to the Linux companion
 path. The terminal task picker shows the distribution, workspace and access.
+
+## Remote SSH
+
+Use the Visor runtime and companion on the enrolled Linux host. The Host bridge
+must report the current machine assignment for the canonical Linux workspace.
+Select and approve the corresponding Visor session through the companion.
+The SSH session uses the same private companion socket and terminal declaration.
+
+```sh
+hypermesh-companion --terminal-task "$workspace" context
+hypermesh-companion --terminal-task "$workspace" --host "$device_id" run "$revision"
+hypermesh-companion --terminal-task "$workspace" --host "$device_id" watch "$task_id" "$cursor"
+```
+
+Compare the context's `device_id` with the expected device in your Host
+inventory. In the trusted VS Code Remote–SSH workspace, set
+`hypermesh.companionExecutable` and `hypermesh.terminalHostDeviceId` in
+**Remote Settings**. The picker shows the device, workspace and access state.
+On reconnect, attach by task ID and the last byte cursor. Visor checks the
+expected device and current workspace assignment before returning output or
+accepting input.

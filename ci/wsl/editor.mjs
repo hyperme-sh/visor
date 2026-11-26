@@ -1,8 +1,9 @@
-// Drive the Windows workbench while its workspace extension host runs in WSL.
+// Drive the Windows workbench while its workspace extension host runs in the fixture.
 import assert from 'node:assert/strict';
 import { setTimeout as wait } from 'node:timers/promises';
 
-const [port, distro, workspace, cliTask, marker] = process.argv.slice(2);
+const [port, remote, workspace, cliTask, marker, device] = process.argv.slice(2);
+const location = device ? `SSH device ${device}` : `WSL ${remote}`;
 const deadline = Date.now() + 300_000;
 let sequence = 0;
 let socket;
@@ -142,11 +143,16 @@ function waitForTask(expected, previous) {
 
 try {
   await connect();
-  await until('the WSL workspace title', () => evaluate(`document.title.toLowerCase().includes(${JSON.stringify(distro.toLowerCase())})`), 120_000);
-  await until('the Workspace Trust prompt', () =>
-    click('.monaco-dialog-box .monaco-button, .monaco-dialog-box button', 'Yes, I trust the authors'), 60_000);
+  const workspaceTitle = device ? `[ssh: ${remote.toLowerCase()}]` : remote.toLowerCase();
+  await until('the remote workspace title', () => evaluate(
+    `document.title.toLowerCase().includes(${JSON.stringify(workspaceTitle)})`,
+  ), 120_000);
+  const trustButtons = '.monaco-dialog-box .monaco-button, .monaco-dialog-box button';
+  await until('the Workspace Trust prompt', async () =>
+    (device && await click(trustButtons, 'Trust Folder & Continue')) ||
+    await click(trustButtons, 'Yes, I trust the authors'), 60_000);
   const begin = async () => {
-    await until('the installed Hypermesh command in the WSL window', async () => {
+    await until('the installed Hypermesh command in the remote window', async () => {
       try {
         await palette('Hypermesh: Visor terminal task', 6000);
         return true;
@@ -156,8 +162,8 @@ try {
         return false;
       }
     }, 80_000);
-    const title = `WSL ${distro} · ${workspace} · access ready`;
-    await until('the distro and workspace in the task picker', () => evaluate(
+    const title = `${location} · ${workspace} · access ready`;
+    await until('the selected device or distro and workspace in the task picker', () => evaluate(
       `document.querySelector('.quick-input-titlebar')?.innerText.includes(${JSON.stringify(title)})`,
     ));
   };
@@ -169,7 +175,7 @@ try {
   await send('Input.insertText', { text: cliTask });
   await key('Enter', 'Enter', 13);
   await waitForTask(cliTask);
-  console.log(`VS Code attached to CLI task ${cliTask} in ${distro} at ${workspace}`);
+  console.log(`VS Code attached to CLI task ${cliTask} in ${location} at ${workspace}`);
 
   await begin();
   await pick('Run declared task');
@@ -177,7 +183,7 @@ try {
     click('.monaco-dialog-box .monaco-button, .monaco-dialog-box button', 'Run Task'));
   const editorTask = await waitForTask(undefined, cliTask);
   assert.notEqual(editorTask, cliTask);
-  console.log(`VS Code ran task ${editorTask} in ${distro} at ${workspace}`);
+  console.log(`VS Code ran task ${editorTask} in ${location} at ${workspace}`);
   console.log(`VISOR_EDITOR_TASK=${editorTask}`);
 } catch (error) {
   if (socket?.readyState === WebSocket.OPEN) {

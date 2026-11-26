@@ -1,8 +1,8 @@
 # Windows native engine
 
-The Rust engine builds as `hypermesh_visor.dll` on Windows x64. This is a
-component embedded by the native Windows Forms companion. The development
-bundle is self-contained and unsigned; a per-user development installer is included. Windows ARM64 desktop packaging is not enabled yet.
+The native Windows Forms companion embeds the Rust engine as
+`hypermesh_visor.dll`. For Windows x64 or ARM64, choose the self-contained
+portable ZIP or per-user installer matching your CPU. Both are unsigned.
 
 The native app must register its callback in-process. Callback output buffers
 use `hypermesh_native_alloc` and `hypermesh_native_free` from this DLL; never
@@ -44,7 +44,7 @@ Windows desktop has been exercised outside CI.
 
 ## Run the development bundle
 
-Build on Windows x64 with Rust, Go 1.25 and the .NET 10 SDK:
+Build on native Windows x64 or ARM64 with Rust, Go 1.25, and the .NET 10 SDK:
 
 ```powershell
 ./native/windows/build-development.ps1

@@ -1,13 +1,16 @@
 #!/bin/bash
-# CI development archive only; this does not create a tag or release.
+# Build and check the ad-hoc signed native archive used by CI and GitHub Releases.
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 output=${1:?Usage: package-development.sh OUTPUT_DIRECTORY}
 [[ ! -e "$output" ]] || { echo 'Output already exists' >&2; exit 1; }
-[[ $(uname -s) == Darwin && $(uname -m) == arm64 ]] || { echo 'The development distribution currently supports Apple Silicon only' >&2; exit 1; }
+arch=$(uname -m)
+[[ $(uname -s) == Darwin && ( $arch == arm64 || $arch == x86_64 ) ]] || { echo 'Expected native Apple Silicon or Intel macOS' >&2; exit 1; }
+export MACOSX_DEPLOYMENT_TARGET=${MACOSX_DEPLOYMENT_TARGET:-15.0}
 revision=$(git rev-parse HEAD)
 mkdir -p "$output"
-bundle="$output/hypermesh-visor-macos-arm64"
+archive="hypermesh-visor-macos-$arch.zip"
+bundle="$output/${archive%.zip}"
 mkdir -p "$bundle/bin" "$bundle/libexec"
 bash native/macos/build-app.sh "$bundle/Hypermesh Visor Development.app"
 cargo build --locked --bin hypermesh-desktop-mcp
@@ -29,7 +32,7 @@ tar -xzf "$source_dir/source.tar.gz" -C "$source_dir" --strip-components=1
 (cd "$source_dir" && CGO_ENABLED=0 go build -mod=readonly -buildvcs=false -trimpath -o "$bundle/libexec/conductor" ./cmd/conductor)
 printf '%s\n' "$conductor_revision" > "$bundle/conductor-source-revision"
 printf '%s\n' "$conductor_sha256" > "$bundle/conductor-source-archive.sha256"
-swiftc -O native/macos/Launcher.swift -o "$bundle/libexec/hypermesh-visor"
+swiftc -O -target "$arch-apple-macos$MACOSX_DEPLOYMENT_TARGET" native/macos/Launcher.swift -o "$bundle/libexec/hypermesh-visor"
 codesign --force --sign - --options runtime --identifier sh.hyperme.visor.launcher "$bundle/libexec/hypermesh-visor"
 "$bundle/libexec/hypermesh-visor" --self-test
 for program in hypermesh hypermesh-desktop-mcp hypermesh-acp conductor hypermesh-visor; do
@@ -40,5 +43,5 @@ cp native/macos/DISTRIBUTION.md "$bundle/README.md"
 printf '%s\n' "$revision" > "$bundle/source-revision"
 python3 native/macos/test-package.py --manifest "$bundle"
 python3 native/macos/test-package.py "$bundle"
-ditto -c -k --sequesterRsrc --keepParent "$bundle" "$output/hypermesh-visor-macos-arm64.zip"
-(cd "$output" && shasum -a 256 hypermesh-visor-macos-arm64.zip > hypermesh-visor-macos-arm64.zip.sha256)
+ditto -c -k --sequesterRsrc --keepParent "$bundle" "$output/$archive"
+(cd "$output" && shasum -a 256 "$archive" > "$archive.sha256")

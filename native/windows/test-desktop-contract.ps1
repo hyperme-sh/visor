@@ -1,7 +1,8 @@
 $ErrorActionPreference = 'Stop'
 if (!$env:CI -or !$env:RUNNER_TEMP) { throw 'Native desktop fixture contracts run only in CI' }
 $output = Join-Path $env:RUNNER_TEMP ('visor-desktop-contract-' + [guid]::NewGuid())
-& dotnet publish native/windows/contracts/DesktopContracts.csproj -c Release -r win-x64 --self-contained true -p:RestoreLockedMode=true -o $output
+$arch = [Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString().ToLowerInvariant()
+& dotnet publish native/windows/contracts/DesktopContracts.csproj -c Release -r "win-$arch" --self-contained true -p:RestoreLockedMode=true -o $output
 if ($LASTEXITCODE -ne 0) { throw 'Desktop fixture build failed' }
 $stdout = Join-Path $output 'stdout.txt'
 $stderr = Join-Path $output 'stderr.txt'

@@ -4,6 +4,12 @@
 #ifndef BundleVersion
   #error BundleVersion is required
 #endif
+#ifndef BundleArchitecture
+  #error BundleArchitecture is required
+#endif
+#ifndef AllowedArchitecture
+  #error AllowedArchitecture is required
+#endif
 
 [Setup]
 AppId={{07DCA947-3B65-4805-B806-0F82D083690B}
@@ -13,8 +19,8 @@ AppPublisher=Hyperme.sh
 DefaultDirName={localappdata}\Programs\HypermeshVisorDevelopment
 DefaultGroupName=Hypermesh Visor Development
 PrivilegesRequired=lowest
-ArchitecturesAllowed=x64compatible
-ArchitecturesInstallIn64BitMode=x64compatible
+ArchitecturesAllowed={#AllowedArchitecture}
+ArchitecturesInstallIn64BitMode={#AllowedArchitecture}
 MinVersion=10.0
 DisableProgramGroupPage=yes
 UsePreviousAppDir=yes
@@ -22,7 +28,7 @@ UsePreviousTasks=yes
 CloseApplications=yes
 RestartApplications=no
 UninstallDisplayIcon={app}\hypermesh-native-desktop.exe
-OutputBaseFilename=hypermesh-visor-{#BundleVersion}-windows-x64-unsigned-setup
+OutputBaseFilename=hypermesh-visor-{#BundleVersion}-windows-{#BundleArchitecture}-unsigned-setup
 Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern

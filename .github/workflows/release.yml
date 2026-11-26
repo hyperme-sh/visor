@@ -19,6 +19,9 @@ jobs:
   headless-packages:
     if: startsWith(github.ref, 'refs/tags/v')
     uses: ./.github/workflows/headless.yml
+  native-desktop:
+    if: startsWith(github.ref, 'refs/tags/v')
+    uses: ./.github/workflows/native-desktop.yml
 
   packages:
     name: linux packages
@@ -171,7 +174,7 @@ jobs:
 
   publish:
     name: publish GitHub release
-    needs: [packages, installed-x11, headless-packages]
+    needs: [packages, installed-x11, headless-packages, native-desktop]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-24.04
     permissions:
@@ -197,14 +200,30 @@ jobs:
           name: headless-musl-aarch64
           path: headless/aarch64
 
+      - name: Download qualified Windows and macOS packages
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: visor-desktop-downloads
+          path: desktop
+
       - name: Verify and combine release assets
         env:
           SOURCE_REVISION: ${{ github.sha }}
-        run: python3 ci/assemble-headless-assets.py dist headless "$SOURCE_REVISION"
+        run: |
+          python3 ci/assemble-headless-assets.py dist headless "$SOURCE_REVISION"
+          (cd desktop && sha256sum --strict --check checksums.txt)
+          cp desktop/*.zip desktop/*.exe dist/
+          cat desktop/checksums.txt >> dist/checksums.txt
+          (cd dist && sha256sum --strict --check checksums.txt)
 
       - name: Publish
-        uses: softprops/action-gh-release@v3.0.3
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
+          generate_release_notes: true
+          body: |
+            Desktop downloads are available for Linux x86_64 and arm64, Windows x64 and ARM64, and macOS Apple Silicon and Intel. Linux headless downloads are included.
+
+            Windows installers and portable ZIPs are unsigned. macOS ZIPs contain ad-hoc-signed apps for macOS 15 or later. Use `checksums.txt` to verify downloads.
           files: |
             dist/hypermesh-visor-x86_64
             dist/hypermesh-visor-x86_64.deb
@@ -213,5 +232,8 @@ jobs:
             dist/hypermesh-visor-aarch64.deb
             dist/hypermesh-visor-aarch64.rpm
             dist/hypermesh-visor-headless-*
+            dist/hypermesh-visor-*-windows-*-unsigned-setup.exe
+            dist/hypermesh-visor-windows-*-unsigned.zip
+            dist/hypermesh-visor-macos-*.zip
             dist/checksums.txt
           fail_on_unmatched_files: true

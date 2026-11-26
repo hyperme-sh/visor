@@ -31,6 +31,16 @@ struct Options {
 
 fn main() -> ExitCode {
     let mut args = std::env::args().skip(1).peekable();
+    if args.peek().is_some_and(|arg| arg == "catalog") {
+        args.next();
+        return match hypermesh_visor::tool_catalog::run(args, io::stdout().lock()) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(error) => {
+                eprintln!("hypermesh-visor catalog: {error}");
+                ExitCode::FAILURE
+            }
+        };
+    }
     #[cfg(unix)]
     if args.peek().is_some_and(|arg| arg == "squad-publish") {
         args.next();
@@ -300,6 +310,7 @@ where
                     "hypermesh-visor [--crash-consent enable|disable] [--tcp] [--listen 127.0.0.1:9847] [--fixture --fixture-log PATH]\n\
                      [--supervisor-url URL] [--supervisor-url-2 URL] [--default-model {DEFAULT_CATALOG_ID}]\n\
                      [--route CATALOG=URL] [--experts CATALOG] [--expert-answer CATALOG=URL]\n\
+                     hypermesh-visor catalog --help\n\
                      hypermesh-visor squad-resume HTTPS_ORIGIN FORUM PLANE_TASK_ID AGENT [CURSOR SQUAD_TASK_ID]\n\
                      Use --sources BRIEF_REVISION WORKBOOK_REVISION after cursor zero and the Squad task ID.\n\
                      Add --preview-base PREVIEW_REVISION to verify the current preview revision.\n\

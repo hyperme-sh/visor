@@ -17,6 +17,7 @@ cp target/release/hypermesh-host-health /bundle/root/usr/bin/hypermesh-host-heal
 cp /bundle/conductor /bundle/root/usr/lib/hypermesh-visor-headless/conductor
 cp /bundle/conductor-LICENSE /bundle/root/usr/share/doc/hypermesh-visor-headless/
 cp LICENSE /bundle/root/usr/share/doc/hypermesh-visor-headless/
+cp src/tool_catalog/llama2c/LICENSE /bundle/root/usr/share/doc/hypermesh-visor-headless/llama2c-LICENSE
 cp docs/headless.md /bundle/root/usr/share/doc/hypermesh-visor-headless/README.md
 cp docs/host-health.md /bundle/root/usr/share/doc/hypermesh-visor-headless/host-health.md
 for format in apk deb rpm; do

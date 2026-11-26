@@ -54,7 +54,7 @@ impl Channel {
     }
 }
 
-fn prepare(staging: &Path, bytes: &[u8]) -> Result<super::Staged, Error> {
+pub(crate) fn check_sandbox() -> Result<(), Error> {
     let bwrap = std::fs::symlink_metadata(BWRAP).map_err(|_| Error::Unavailable)?;
     if !bwrap.is_file()
         || bwrap.uid() != 0
@@ -63,25 +63,19 @@ fn prepare(staging: &Path, bytes: &[u8]) -> Result<super::Staged, Error> {
     {
         return Err(Error::Unavailable);
     }
+    Ok(())
+}
+
+fn prepare(staging: &Path, bytes: &[u8]) -> Result<super::Staged, Error> {
+    check_sandbox()?;
     stage_file(staging, bytes)
 }
 
-pub(super) async fn invoke(
-    package: &Package,
-    staging: &Path,
-    input: Value,
-    duration: Duration,
-    live: &impl Fn() -> bool,
-) -> Result<Value, Error> {
-    let started = Instant::now();
-    let staging = staging.to_owned();
-    let bytes = package.executable.clone();
-    let executable = tokio::task::spawn_blocking(move || prepare(&staging, &bytes))
-        .await
-        .map_err(|_| Error::Unavailable)??;
-    if !live() {
-        return Err(Error::Cancelled);
-    }
+pub(crate) fn sandbox_command(
+    executable: &Path,
+    files: &[(&Path, &str)],
+    arguments: &[&str],
+) -> Command {
     let mut command = Command::new(BWRAP);
     command
         .env_clear()
@@ -94,18 +88,16 @@ pub(super) async fn invoke(
             "--clearenv",
             "--cap-drop",
             "ALL",
-            "--ro-bind",
         ])
-        .arg(&executable.0)
-        .args([
-            "/plugin",
-            "--remount-ro",
-            "/",
-            "--chdir",
-            "/",
-            "--",
-            "/plugin",
-        ])
+        .arg("--ro-bind")
+        .arg(executable)
+        .arg("/plugin");
+    for (source, target) in files {
+        command.arg("--ro-bind").arg(source).arg(target);
+    }
+    command
+        .args(["--remount-ro", "/", "--chdir", "/", "--", "/plugin"])
+        .args(arguments)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -144,6 +136,26 @@ pub(super) async fn invoke(
             Ok(())
         });
     }
+    command
+}
+
+pub(super) async fn invoke(
+    package: &Package,
+    staging: &Path,
+    input: Value,
+    duration: Duration,
+    live: &impl Fn() -> bool,
+) -> Result<Value, Error> {
+    let started = Instant::now();
+    let staging = staging.to_owned();
+    let bytes = package.executable.clone();
+    let executable = tokio::task::spawn_blocking(move || prepare(&staging, &bytes))
+        .await
+        .map_err(|_| Error::Unavailable)??;
+    if !live() {
+        return Err(Error::Cancelled);
+    }
+    let mut command = sandbox_command(&executable.0, &[], &[]);
     let mut child = command.spawn().map_err(|_| Error::Unavailable)?;
     let mut channel = Channel {
         stdin: child.stdin.take().ok_or(Error::Unavailable)?,

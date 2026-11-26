@@ -67,6 +67,7 @@ pub mod crash_recovery;
 pub mod crash_startup;
 pub mod crash_capture;
 mod vault;
+pub mod tool_catalog;
 mod usage;
 pub use usage::ResponseUsage;
 

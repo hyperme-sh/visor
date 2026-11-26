@@ -1,6 +1,6 @@
 //! Public plugin packages are immutable for the duration of a local grant.
 pub(crate) mod publication;
-mod stdio;
+pub(crate) mod stdio;
 pub(crate) mod store;
 
 use crate::mcp::schema;

@@ -24,6 +24,12 @@ build() {
 inventory() {
     container="$(docker create "$1")"
     docker cp "$container:/usr/share/visor-worker/." "$output/$2/"
+    mkdir "$temporary/state-$2"
+    docker cp "$container:/var/lib/visor/." "$temporary/state-$2/"
+    if [[ -n "$(find "$temporary/state-$2" -mindepth 1 -print -quit)" ]]; then
+        echo "Worker image contains persisted state for profile $2" >&2
+        exit 1
+    fi
     docker rm "$container" >/dev/null
     container=""
     docker inspect "$1" > "$temporary/$2.json"
@@ -43,6 +49,7 @@ docker image save visor-cloud-worker:ci | gzip -n -1 > "$output/visor-cloud-work
 jq -s '{base: .[0], pack: .[1]}' "$temporary/base.json" "$temporary/coding-v1.json" \
     | python3 ci/cloud-worker/manifest.py build "$output" "$architecture" "$revision"
 python3 ci/cloud-worker/manifest.py verify "$output"
+jq '{platform, image_id, archive, coding_pack_image_id}' "$output/manifest.json"
 
 # Exercise checksum refusal without changing the archive or retaining a bad manifest.
 mv "$output/manifest.json" "$temporary/manifest.json"

@@ -304,4 +304,8 @@ def main(public_key):
 
 
 if __name__ == "__main__":
+    if sys.argv[2:] == ["--preview"]:
+        os.environ["VISOR_FIXTURE_PREVIEW"] = "ssh"
+    elif len(sys.argv) != 2:
+        raise SystemExit("Unexpected SSH fixture arguments")
     main(sys.argv[1])

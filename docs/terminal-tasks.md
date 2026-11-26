@@ -132,20 +132,24 @@ expected device and current workspace assignment before returning output or
 accepting input.
 
 
-## Preview eligibility
+## Workspace preview
 
 Set `"preview_port": 4173` in the owner-only declaration for a command that
-serves a development app on that port. The task context advertises the port.
-While the task runs, ask Visor whether the selected port is eligible for a
-preview.
+serves a development app on that loopback port. Start the task, then choose
+**Open workspace preview** in the trusted local or Remote–SSH VS Code workspace.
+Review the task, device, workspace, and declared port. VS Code opens the preview
+in its integrated browser. For Remote–SSH, leave the VS Code local forwarding
+host set to `localhost`.
 
 ```sh
 hypermesh-companion --terminal-task "$workspace" preview-status "$task_id" 4173
-hypermesh-companion --terminal-task "$workspace" --host "$device_id" preview-status "$task_id" 4173
+hypermesh-companion --terminal-task "$workspace" --host "$device_id" preview-open "$task_id" 4173
+hypermesh-companion --terminal-task "$workspace" --host "$device_id" preview-close "$task_id" 4173 "$preview_id"
 ```
 
-An eligible response identifies the task, workspace, enrolled device and port.
-The status check requires the current private companion connection, assignment,
-declaration and the local consent under which the task started. Pause,
-cancellation or task completion removes eligibility. A successful status
-request reports eligibility only.
+The CLI status and editor show the same preview ID. An open request from the
+CLI returns the short-lived loopback link on the machine serving the app.
+Visor expires the link after 90 seconds or earlier when the task ends, the
+preview closes, or local consent or assignment changes. Preview pages may
+load relative same-origin assets through the link. The preview serves HTTP
+GET and HEAD for the declared origin.

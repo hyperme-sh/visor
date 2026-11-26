@@ -1,4 +1,4 @@
-param([switch]$RemoteSsh)
+param([switch]$RemoteSsh, [switch]$Preview)
 
 $ErrorActionPreference = 'Stop'
 if ($env:GITHUB_ACTIONS -ne 'true' -or $env:RUNNER_ARCH -ne 'X64' -or !$env:RUNNER_TEMP) {
@@ -10,6 +10,11 @@ $distro = "VisorCI-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"
 if ($RemoteSsh) {
     $fixture += '-ssh'
     $distro += '-SSH'
+}
+if ($Preview) {
+    if (!$RemoteSsh) { throw 'The Windows preview contract requires Remote SSH' }
+    $fixture += '-preview'
+    $distro += '-Preview'
 }
 $archive = Join-Path $env:RUNNER_TEMP 'visor-wsl-artifact/visor-wsl.tar'
 $workspace = '/home/visorci/.visor-wsl/project'
@@ -44,6 +49,7 @@ try {
             throw 'The fixture SSH public key was invalid'
         }
         $ownerArgs += @('/opt/visor-wsl/ssh_host.py', $key[1])
+        if ($Preview) { $ownerArgs += '--preview' }
     } else {
         $ownerArgs += '/opt/visor-wsl/task.py'
     }
@@ -127,6 +133,7 @@ try {
         $settings['remote.SSH.showLoginTerminal'] = $false
         # The resolver must connect before the workbench presents the trust prompt.
         $settings['remote.SSH.useLocalServer'] = $true
+        $settings['remote.autoForwardPorts'] = $false
         $settings['remote.SSH.useExecServer'] = $false
         $settings['remote.SSH.connectTimeout'] = 60
     }
@@ -149,9 +156,20 @@ try {
     )
     $editorArgs = @($port, $remoteName, $workspace, $case.cliTask, $case.marker)
     if ($RemoteSsh) { $editorArgs += $case.device }
+    if ($Preview) { $editorArgs += 'preview' }
     $result = & node ci/wsl/editor.mjs @editorArgs
     $result | Write-Host
     if ($LASTEXITCODE -ne 0) { throw "The VS Code workspace check failed for $transport" }
+    if ($Preview) {
+        $previewResult = $result | Where-Object { $_ -match '^VISOR_EDITOR_PREVIEW=([a-f0-9-]{36})$' }
+        if (@($previewResult).Count -ne 1) { throw 'VS Code preview ID missing' }
+        $previewId = $previewResult -replace '^VISOR_EDITOR_PREVIEW=', ''
+        & $ssh -F $sshConfig $remoteName /usr/bin/python3 /opt/visor-wsl/task.py preview-open $previewId
+        if ($LASTEXITCODE -ne 0) { throw 'The SSH CLI did not observe the editor preview' }
+        & $ssh -F $sshConfig $remoteName /usr/bin/python3 /opt/visor-wsl/task.py preview-closed $previewId
+        if ($LASTEXITCODE -ne 0) { throw 'The SSH CLI could not close the editor preview' }
+        return
+    }
     $task = $result | Where-Object { $_ -match '^VISOR_EDITOR_TASK=([a-f0-9-]{36})$' }
     if (@($task).Count -ne 1) { throw 'VS Code task ID missing' }
     $taskId = $task -replace '^VISOR_EDITOR_TASK=', ''

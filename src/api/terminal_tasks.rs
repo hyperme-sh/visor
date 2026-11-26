@@ -7,6 +7,7 @@ use std::{io::Read, num::NonZeroU16, process::Stdio};
 use tokio::io::AsyncReadExt;
 
 mod interactive;
+mod preview;
 mod process_group;
 use interactive::{ControlRequest, Master, Terminal};
 use process_group::ProcessGroup;
@@ -34,6 +35,7 @@ impl Runs {
         records.retain(|_, run| {
             if run.session == session {
                 run.cancel = true;
+                run.preview = None;
                 return run.active();
             }
             true
@@ -141,6 +143,21 @@ enum Operation {
         id: Uuid,
         port: NonZeroU16,
     },
+    PreviewOpen {
+        boot: Uuid,
+        session: Uuid,
+        binding: String,
+        id: Uuid,
+        port: NonZeroU16,
+    },
+    PreviewClose {
+        boot: Uuid,
+        session: Uuid,
+        binding: String,
+        id: Uuid,
+        port: NonZeroU16,
+        preview_id: Uuid,
+    },
     Control {
         boot: Uuid,
         session: Uuid,
@@ -213,6 +230,7 @@ struct Run {
     terminal: Option<Terminal>,
     input_consent: Option<tasks::Consent>,
     preview_consent: Option<tasks::Consent>,
+    preview: Option<preview::Grant>,
     truncated: bool,
     cancel: bool,
 }
@@ -376,6 +394,7 @@ pub(super) async fn exchange(
                 terminal: process.master.clone().map(Terminal::new),
                 input_consent: declared.task.interactive.then_some(consent),
                 preview_consent: declared.task.preview_port.map(|_| consent),
+                preview: None,
                 truncated: false,
                 cancel: false,
             };
@@ -420,35 +439,56 @@ pub(super) async fn exchange(
             let mut records = lock(&store.records);
             let run = connected_run(records.get_mut(&id), &authority)?;
             run.cancel = true;
+            run.preview = None;
             Ok(Json(run.page(id, 0, consent.is_some())?))
         }
-        Operation::PreviewContext {
-            boot,
-            session,
-            binding,
-            id,
-            port,
-        } => {
-            require_binding(store, &authority, boot, session, &binding)?;
+        Operation::PreviewContext { boot, session, ref binding, id, port }
+        | Operation::PreviewOpen { boot, session, ref binding, id, port }
+        | Operation::PreviewClose { boot, session, ref binding, id, port, .. } => {
+            require_binding(store, &authority, boot, session, binding)?;
             let declared = declaration(&state.mcp_dir, &body.workspace)
                 .map_err(|_| ApiError::forbidden("Terminal task declaration refused"))?
                 .filter(|declared| declared.task.preview_port == Some(port))
                 .ok_or_else(|| ApiError::forbidden("Preview port is not declared for this workspace"))?;
+            let open = matches!(body.operation, Operation::PreviewOpen { .. });
+            let listener = if open {
+                Some(tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+                    .await
+                    .map_err(|_| ApiError::unavailable("Could not bind workspace preview"))?)
+            } else {
+                None
+            };
             let mut records = lock(&store.records);
             let run = connected_run(records.get_mut(&id), &authority)?;
-            let gate = lock(&state.automation);
-            if !run.active()
-                || run.cancel
-                || run.revision != declared.revision
-                || !state.selected_approved.load(Ordering::SeqCst)
-                || !run.preview_consent.is_some_and(|grant| grant.matches(&gate))
-            {
+            if !preview::run_allowed(&state, run, &declared.revision) {
                 return Err(ApiError::forbidden("Workspace preview access unavailable"));
             }
-            Ok(Json(json!({
+            if run.preview.as_ref().is_some_and(|grant| !grant.active()) {
+                run.preview = None;
+            }
+            if let Operation::PreviewClose { preview_id, .. } = body.operation {
+                if run.preview.as_ref().is_some_and(|grant| grant.id != preview_id) {
+                    return Err(ApiError::conflict("Workspace preview has changed"));
+                }
+                run.preview = None;
+            }
+            if let Some(listener) = listener.filter(|_| run.preview.is_none()) {
+                run.preview = Some(preview::Grant::open(
+                    listener, Arc::downgrade(&state), authority.clone(), body.workspace.clone(), id, port,
+                ).map_err(|_| ApiError::unavailable("Could not start workspace preview"))?);
+            }
+            let mut response = json!({
                 "state": "eligible", "boot": boot, "session": session, "id": id,
                 "workspace": body.workspace, "device_id": authority.device_id, "port": port,
-            })))
+            });
+            if let Some(grant) = run.preview.as_ref() {
+                response["state"] = json!("open");
+                response["preview_id"] = json!(grant.id);
+                if open {
+                    response["url"] = json!(grant.url());
+                }
+            }
+            Ok(Json(response))
         }
         Operation::Control {
             boot,
@@ -619,6 +659,7 @@ async fn supervise(
     };
     if let Some(run) = lock(&state.terminal_tasks.records).get_mut(&id) {
         run.cancel = true;
+        run.preview = None;
         if let Some(terminal) = run.terminal.as_mut() {
             terminal.close();
         }
@@ -706,6 +747,7 @@ mod tests {
             terminal: None,
             input_consent: None,
             preview_consent: None,
+            preview: None,
             truncated: false,
             cancel: false,
         };
@@ -874,26 +916,37 @@ mod tests {
         assert_eq!(attached["exit_code"], finished["exit_code"]);
         assert_eq!(attached["output_base64"], "");
 
-        let preview_context = |id: Uuid, port: u16| {
-            let mut request = base("preview_context", id);
+        let preview_request = |kind: &str, id: Uuid, port: u16| {
+            let mut request = base(kind, id);
             request["port"] = json!(port);
             request
         };
+        let preview_context = |id, port| preview_request("preview_context", id, port);
+        let upstream = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = upstream.local_addr().unwrap().port();
+        let preview_app = tokio::spawn(async move {
+            let app = Router::new()
+                .route("/", get(|| async { axum::response::Html("<title>Preview app</title>") }))
+                .route("/redirect", get(|| async {
+                    axum::response::Redirect::temporary("http://127.0.0.1:1/")
+                }));
+            axum::serve(upstream, app).await.unwrap();
+        });
         assert_eq!(
-            call(&app, &workspace, preview_context(id, 4173)).await.0,
+            call(&app, &workspace, preview_context(id, port)).await.0,
             StatusCode::FORBIDDEN
         );
-        write_task("/bin/sleep", &["10"], false, Some(4173));
+        write_task("/bin/sleep", &["10"], false, Some(port));
         let (_, updated) = call(&app, &workspace, json!({"type":"context"})).await;
-        assert_eq!(updated["task"]["preview_port"], 4173);
+        assert_eq!(updated["task"]["preview_port"], port);
         let active = Uuid::new_v4();
         let mut start = base("start", active);
         start["revision"] = updated["task"]["revision"].clone();
         assert_eq!(call(&app, &workspace, start).await.0, StatusCode::OK);
-        let preview = preview_context(active, 4173);
+        let preview = preview_context(active, port);
         let eligible = json!({
             "state": "eligible", "boot": scope["boot"], "session": session, "id": active,
-            "workspace": workspace, "device_id": device, "port": 4173,
+            "workspace": workspace, "device_id": device, "port": port,
         });
         assert_eq!(
             call_device(&app, &workspace, preview.clone(), Some(device)).await,
@@ -910,7 +963,7 @@ mod tests {
         assert_eq!(call(&app, &directory, preview.clone()).await.0, StatusCode::FORBIDDEN);
         assert_eq!(call(&network, &workspace, preview.clone()).await.0, StatusCode::FORBIDDEN);
         assert_eq!(
-            call(&app, &workspace, preview_context(active, 4174)).await.0,
+            call(&app, &workspace, preview_context(active, if port == 4174 { 4173 } else { 4174 })).await.0,
             StatusCode::FORBIDDEN
         );
         assert_eq!(
@@ -918,13 +971,48 @@ mod tests {
             StatusCode::UNPROCESSABLE_ENTITY
         );
         assert_eq!(
-            call(&app, &workspace, preview_context(Uuid::new_v4(), 4173)).await.0,
+            call(&app, &workspace, preview_context(Uuid::new_v4(), port)).await.0,
             StatusCode::NOT_FOUND
         );
         assert_eq!(
-            call(&app, &workspace, preview_context(id, 4173)).await.0,
+            call(&app, &workspace, preview_context(id, port)).await.0,
             StatusCode::FORBIDDEN
         );
+        let open = preview_request("preview_open", active, port);
+        let (status, opened) = call(&app, &workspace, open.clone()).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(opened["state"], "open");
+        let url = opened["url"].as_str().unwrap();
+        let preview_id = &opened["preview_id"];
+        let visible = call(&app, &workspace, preview.clone()).await.1;
+        assert_eq!(visible["preview_id"], *preview_id);
+        assert!(visible.get("url").is_none());
+        assert_eq!(call(&app, &workspace, open).await.1["preview_id"], *preview_id);
+        let browser = reqwest::Client::builder().no_proxy().build().unwrap();
+        let response = browser.get(url).send().await.unwrap();
+        assert_eq!(response.headers()["cache-control"], "no-store");
+        assert!(response.text().await.unwrap().contains("Preview app"));
+        let origin = url::Url::parse(url).unwrap().origin().ascii_serialization();
+        assert_eq!(browser.get(&origin).send().await.unwrap().status(), StatusCode::NOT_FOUND);
+        assert_eq!(
+            browser.get(url).header("host", "different.example:1234").send().await.unwrap().status(),
+            StatusCode::FORBIDDEN
+        );
+        assert_eq!(
+            browser.get(format!("{url}redirect")).send().await.unwrap().status(),
+            StatusCode::BAD_GATEWAY
+        );
+        let mut close = preview_request("preview_close", active, port);
+        close["preview_id"] = json!(Uuid::new_v4());
+        assert_eq!(call(&app, &workspace, close.clone()).await.0, StatusCode::CONFLICT);
+        close["preview_id"] = preview_id.clone();
+        let (status, closed) = call(&app, &workspace, close).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(closed["state"], "eligible");
+        if let Ok(response) = browser.get(url).send().await {
+            assert_eq!(response.status(), StatusCode::GONE);
+        }
+
         let control = |id: Uuid, terminal: Value, request: Value| {
             let mut body = base("control", id);
             body["terminal"] = terminal;
@@ -972,7 +1060,7 @@ mod tests {
                 r#"printf 'ready\n'; IFS= read -r line; printf 'first=%s\n' "$line"; stty size; IFS= read -r again; printf 'second=%s\n' "$again"; sleep 10"#,
             ],
             true,
-            Some(4173),
+            Some(port),
         );
         let (_, interactive) = call(&app, &workspace, json!({"type":"context"})).await;
         let active = Uuid::new_v4();
@@ -1071,7 +1159,7 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(
-            call(&app, &workspace, preview_context(active, 4173)).await.0,
+            call(&app, &workspace, preview_context(active, port)).await.0,
             StatusCode::FORBIDDEN
         );
         let mut refused = base("start", Uuid::new_v4());
@@ -1133,5 +1221,6 @@ mod tests {
         lock(&state.sessions).remove(&session);
         assert_eq!(call(&app, &workspace, read).await.0, StatusCode::FORBIDDEN);
         fixture.abort();
+        preview_app.abort();
     }
 }

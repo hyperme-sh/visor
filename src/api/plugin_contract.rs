@@ -757,6 +757,7 @@ async fn github_issue_plugin_uses_the_selected_account_and_public_repository() {
     );
     assert_eq!(calls.load(Ordering::Acquire), before);
 
+    mode.store(0, Ordering::Release);
     let mut opted_in = enable;
     opted_in["code_mode"] = json!(true);
     let enabled = request(&companion, "POST", &grants, opted_in).await;
@@ -771,23 +772,24 @@ async fn github_issue_plugin_uses_the_selected_account_and_public_repository() {
     assert_eq!(calls.load(Ordering::Acquire), before);
 
     let direct_started = Instant::now();
-    let first = body(request(&companion, "POST", &read, call).await).await;
+    let first = request(&companion, "POST", &read, call).await;
+    assert_eq!(first.status(), StatusCode::OK);
+    let first = body(first).await;
     let linked = first["result"]["body"]
         .as_str()
         .unwrap()
         .rsplit_once('#')
         .unwrap()
         .1;
-    let second = body(
-        request(
-            &companion,
-            "POST",
-            &read,
-            json!({"target": target, "number": linked.parse::<u64>().unwrap()}),
-        )
-        .await,
+    let second = request(
+        &companion,
+        "POST",
+        &read,
+        json!({"target": target, "number": linked.parse::<u64>().unwrap()}),
     )
     .await;
+    assert_eq!(second.status(), StatusCode::OK);
+    let second = body(second).await;
     let direct_elapsed = direct_started.elapsed();
     assert_eq!(calls.load(Ordering::Acquire) - before, 6);
     let expected: Vec<_> = [&first, &second]
@@ -800,8 +802,9 @@ async fn github_issue_plugin_uses_the_selected_account_and_public_repository() {
 
     let code_started = Instant::now();
     let composed = request(&companion, "POST", &code, script.clone()).await;
-    assert_eq!(composed.status(), StatusCode::OK);
+    let status = composed.status();
     let composed = body(composed).await;
+    assert_eq!(status, StatusCode::OK, "{composed}");
     let code_elapsed = code_started.elapsed();
     assert_eq!(composed["result"], json!(expected));
     assert_eq!(composed["calls"], 2);

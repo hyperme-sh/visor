@@ -96,7 +96,8 @@ VISOR_PLUGIN_PUBLICATION="$scratch/author.visor-plugin" VISOR_PLUGIN_CONTRACT_DI
     CARGO_TARGET_DIR="$scratch/build" RUSTFLAGS='-C target-feature=+crt-static' \
         cargo build --release --locked --offline --target "$target"
 )
-install -D -m 600 "$scratch/build/$target/release/visor-github-issue" "$scratch/github-issue/plugin"
+mkdir "$scratch/github-issue"
+install -m 600 "$scratch/build/$target/release/visor-github-issue" "$scratch/github-issue/plugin"
 python3 - "$repo/plugins/github-issue/manifest.template.json" "$scratch/github-issue" <<'PYTHON'
 import hashlib
 import json

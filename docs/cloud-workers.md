@@ -104,3 +104,23 @@ disposable, network-isolated container workspace. Managed VM boot, identity
 enrollment and scoped task delivery use the Infra placement and Conductor
 contracts. Track that work in [Visor #346](https://github.com/hyperme-sh/visor/issues/346)
 and [Conductor #114](https://github.com/hyperme-sh/conductor/issues/114).
+
+## Leased workspace tools
+
+The placement controller supplies a root-owned workspace lease and sets
+`HYPERMESH_WORKSPACE_LEASE_FILE` for the installed worker. Start bundled
+Conductor with its private Unix socket. The lease identifies the enrolled
+device, worker generation, selected task, workspace, admitted tool and
+expiration. Both clients select the same assignment.
+
+```sh
+hypermesh-visor-headless workspace-task inspect "$workspace" "$device" "$generation" "$task" "$lease"
+hypermesh-visor-headless workspace-task invoke "$workspace" "$device" "$generation" "$task" "$lease"
+hypermesh-visor-headless workspace-task watch "$workspace" "$device" "$generation" "$task" "$lease"
+```
+
+The first tool is `check-json` for one declared file in the workspace.
+Set `hypermesh.cloudWorkspaceTask` in VS Code User or Remote Settings and
+open **Hypermesh: Cloud workspace task** in the trusted worker workspace.
+The editor displays the worker, task and lease and can invoke the check
+or attach to its output. Detaching leaves the worker's run active.

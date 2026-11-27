@@ -56,6 +56,8 @@ pub mod permission_templates;
 pub mod local_reads;
 #[doc(hidden)]
 pub mod workspace_runtime;
+#[cfg(target_os = "linux")]
+pub mod cloud_workspace;
 mod session;
 mod stream;
 pub mod telemetry;

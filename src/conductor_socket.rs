@@ -55,6 +55,40 @@ fn private_socket(path: &Path, uid: u32) -> Result<(), String> {
     }
     Ok(())
 }
+#[cfg(target_os = "linux")]
+pub(crate) async fn private_json<T: serde::de::DeserializeOwned>(
+    path: &Path,
+    route: &'static str,
+    value: &impl serde::Serialize,
+) -> Result<T, String> {
+    let fail = || "Private workspace task unavailable or changed".to_string();
+    tokio::time::timeout(Duration::from_secs(3), async {
+        let uid = unsafe { libc::geteuid() };
+        private_socket(path, uid)?;
+        let stream = tokio::net::UnixStream::connect(path).await.map_err(|_| fail())?;
+        if crate::local_peer::uid(&stream).ok() != Some(uid) {
+            return Err(fail());
+        }
+        let (mut sender, connection) = hyper::client::conn::http1::handshake(TokioIo::new(stream))
+            .await.map_err(|_| fail())?;
+        struct Driver(tokio::task::JoinHandle<()>);
+        impl Drop for Driver {
+            fn drop(&mut self) { self.0.abort(); }
+        }
+        let _driver = Driver(tokio::spawn(async move { let _ = connection.await; }));
+        let payload = serde_json::to_vec(value).map_err(|_| fail())?;
+        let request = Request::builder()
+            .method("POST").uri(route)
+            .header("Host", "localhost")
+            .header("Content-Type", "application/json")
+            .body(Full::new(Bytes::from(payload))).map_err(|_| fail())?;
+        let reply = sender.send_request(request).await.map_err(|_| fail())?;
+        if reply.status() != StatusCode::OK { return Err(fail()); }
+        let bytes = Limited::new(reply.into_body(), 16384).collect().await.map_err(|_| fail())?.to_bytes();
+        serde_json::from_slice(&bytes).map_err(|_| fail())
+    }).await.map_err(|_| fail())?
+}
+
 pub(crate) struct SocketDoor {
     path: PathBuf,
     lease: Option<uuid::Uuid>,

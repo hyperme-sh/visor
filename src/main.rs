@@ -49,6 +49,18 @@ fn main() -> ExitCode {
         }
         return worker_status::run();
     }
+    #[cfg(target_os = "linux")]
+    if args.peek().is_some_and(|arg| arg == "workspace-task") {
+        args.next();
+        return match hypermesh_visor::cloud_workspace::cli(&args.collect::<Vec<_>>(), io::stdin().lock(), io::stdout().lock()) {
+            Ok(true) => ExitCode::SUCCESS,
+            Ok(false) => ExitCode::FAILURE,
+            Err(error) => {
+                eprintln!("{error}");
+                ExitCode::FAILURE
+            }
+        };
+    }
     if args.peek().is_some_and(|arg| arg == "catalog") {
         args.next();
         return match hypermesh_visor::tool_catalog::run(args, io::stdout().lock()) {
@@ -175,6 +187,17 @@ fn main() -> ExitCode {
             managed = Some(Arc::new(child));
         }
     }
+    #[cfg(target_os = "linux")]
+    let workspace_socket = match cloud_workspace_socket(
+        std::env::var_os("HYPERMESH_WORKSPACE_LEASE_FILE").is_some(),
+        managed_socket.as_deref(),
+    ) {
+        Ok(socket) => socket,
+        Err(message) => {
+            eprintln!("{message}");
+            return ExitCode::from(2);
+        }
+    };
     let explicit_socket=std::env::var_os("HYPERMESH_CONDUCTOR_SOCKET").is_some();
     let default_socket = conductor_addr.is_none()
         && options.supervisor_url.is_none() && options.supervisor_url_2.is_none()
@@ -215,6 +238,10 @@ fn main() -> ExitCode {
         Ok(mut state) => {
             state.apply_companion_poll_env();
             state.apply_host_bridge_env();
+            #[cfg(target_os = "linux")]
+            if let Some(socket) = workspace_socket {
+                state.enable_cloud_workspace(socket);
+            }
             if let Err(message) = state.apply_managed_guest_env() {
                 eprintln!("hypermesh-visor: {message}");
                 return ExitCode::from(2);
@@ -256,6 +283,19 @@ fn main() -> ExitCode {
         return ExitCode::from(1);
     }
     ExitCode::SUCCESS
+}
+
+#[cfg(target_os = "linux")]
+fn cloud_workspace_socket(
+    lease_file_set: bool,
+    managed_socket: Option<&std::path::Path>,
+) -> Result<Option<std::path::PathBuf>, &'static str> {
+    if !lease_file_set {
+        return Ok(None);
+    }
+    managed_socket
+        .map(|socket| Some(socket.to_path_buf()))
+        .ok_or("Cloud workspace lease requires bundled Conductor")
 }
 
 fn parse_args_from<I>(args: I) -> Result<Option<Options>, String>
@@ -430,6 +470,22 @@ fn resolve_supervisor_url(flag: Option<&str>, env: Option<&str>) -> Option<Strin
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn cloud_workspace_requires_both_a_lease_setting_and_a_managed_conductor_socket() {
+        let managed_socket = std::path::Path::new("/run/user/1000/visor/conductor.sock");
+        assert_eq!(cloud_workspace_socket(false, None), Ok(None));
+        assert_eq!(cloud_workspace_socket(false, Some(managed_socket)), Ok(None));
+        assert_eq!(
+            cloud_workspace_socket(true, Some(managed_socket)),
+            Ok(Some(managed_socket.to_path_buf()))
+        );
+        assert_eq!(
+            cloud_workspace_socket(true, None),
+            Err("Cloud workspace lease requires bundled Conductor")
+        );
+    }
 
     #[test]
     fn crash_consent_requires_one_explicit_standalone_choice() {

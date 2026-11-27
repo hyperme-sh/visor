@@ -61,6 +61,8 @@ pub struct AppState {
     companions: std::sync::OnceLock<Arc<crate::companion_runtime::Runtime>>,
     companion_init: Mutex<()>,
     managed_guest: Option<crate::companion_lease::Guest>,
+    #[cfg(target_os = "linux")]
+    cloud_workspace: Option<PathBuf>,
     managed_run: Mutex<Option<Uuid>>,
     prompts_stopped: AtomicBool,
     host_bridge: Option<crate::host_bridge::Bridge>,
@@ -199,6 +201,8 @@ impl AppState {
             companions: std::sync::OnceLock::new(),
             companion_init: Mutex::new(()),
             managed_guest: None,
+            #[cfg(target_os = "linux")]
+            cloud_workspace: None,
             managed_run: Mutex::new(None),
             prompts_stopped: AtomicBool::new(false),
             host_bridge: None,
@@ -246,6 +250,11 @@ impl AppState {
         self.companion_poll_timeout = companion_poll_timeout_from(
             std::env::var("HYPERMESH_COMPANION_POLL_MS").ok().as_deref(),
         );
+    }
+
+    #[cfg(target_os = "linux")]
+    pub fn enable_cloud_workspace(&mut self, socket: PathBuf) {
+        self.cloud_workspace = Some(socket);
     }
 
     pub fn apply_host_bridge_env(&mut self) {
@@ -856,6 +865,8 @@ fn routes(state: Arc<AppState>, from_companion: bool) -> Router {
     let router = router.merge(plugins::routes());
     #[cfg(unix)]
     let router = router.route("/terminal-task", post(terminal_tasks::exchange));
+    #[cfg(target_os = "linux")]
+    let router = router.route(crate::cloud_workspace::ROUTE, post(workspace_task));
     router
         .route("/capabilities", get(capabilities))
         .route("/host/capabilities", get(host::catalog))
@@ -924,6 +935,24 @@ fn routes(state: Arc<AppState>, from_companion: bool) -> Router {
         .layer(middleware::from_fn_with_state(state.clone(), managed_admission))
         .layer(Extension(CompanionLink(from_companion)))
         .with_state(state)
+}
+
+#[cfg(target_os = "linux")]
+async fn workspace_task(
+    State(state): State<Arc<AppState>>,
+    Extension(link): Extension<CompanionLink>,
+    Json(body): Json<crate::cloud_workspace::Request>,
+) -> Result<Json<crate::cloud_workspace::View>, ApiError> {
+    if !link.0 || !body.valid() {
+        return Err(ApiError::forbidden("Private scoped workspace request required"));
+    }
+    let unavailable = || ApiError::conflict("Cloud workspace lease unavailable or changed");
+    let socket = state.cloud_workspace.as_deref().ok_or_else(unavailable)?;
+    let reply: crate::cloud_workspace::View =
+        crate::conductor_socket::private_json(socket, crate::cloud_workspace::CONDUCTOR_ROUTE, &body)
+            .await.map_err(|_| unavailable())?;
+    if !reply.matches(&body) { return Err(unavailable()); }
+    Ok(Json(reply))
 }
 
 async fn companion_activity(State(state): State<Arc<AppState>>, Extension(link): Extension<CompanionLink>) -> Result<StatusCode, ApiError> {

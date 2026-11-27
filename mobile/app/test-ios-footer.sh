@@ -32,7 +32,18 @@ test -n "$build"
 export TEST_RUNNER_VISOR_APP_ID="$bundle_id"
 export TEST_RUNNER_VISOR_EXPECTED_FOOTER="Version $version · Build $build"
 
+result="$derived/PhoneFooter.xcresult"
 xcodebuild -project "$project" -scheme App -configuration Release \
   -destination "$destination" -derivedDataPath "$derived" \
-  -parallel-testing-enabled NO -only-testing:PhoneFooterUITests test-without-building -quiet
+  -parallel-testing-enabled NO -resultBundlePath "$result" \
+  -only-testing:PhoneFooterUITests/PhoneFooterUITests/testFooterShowsInstalledVersionAndBuild \
+  test-without-building -quiet
+xcrun xcresulttool get test-results summary --path "$result" | python3 -c '
+import json
+import sys
+
+summary = json.load(sys.stdin)
+if summary["passedTests"] != 1 or summary["failedTests"] or summary["skippedTests"]:
+    sys.exit(f"Expected one successful iOS footer test, got {summary}")
+'
 printf 'Verified installed iOS footer: %s\n' "$TEST_RUNNER_VISOR_EXPECTED_FOOTER" | tee -a "$GITHUB_STEP_SUMMARY"

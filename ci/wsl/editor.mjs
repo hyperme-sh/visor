@@ -152,7 +152,6 @@ try {
   const trustWorkspace = async () =>
     (device && await click(trustButtons, 'Trust Folder & Continue')) ||
     await click(trustButtons, 'Yes, I trust the authors');
-  await until('the Workspace Trust prompt', trustWorkspace, 60_000);
   const begin = async () => {
     await until('the installed Hypermesh command in the workspace', async () => {
       // Remote ports and the workspace can each present a trust prompt during startup.

@@ -1,0 +1,61 @@
+name: Wayland takeover prototype
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/wayland-takeover-prototype.yml
+      - experiments/wayland-takeover/**
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/wayland-takeover-prototype.yml
+      - experiments/wayland-takeover/**
+
+permissions:
+  contents: read
+
+concurrency:
+  group: wayland-takeover-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  contracts:
+    name: KWin and RemoteDesktop takeover contracts (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    container: debian:13-slim@sha256:8aa5a7bf5a1955bddbe7d74fcdd0b91ab30e74362a8b73af672b0481b35b44a0
+    timeout-minutes: 45
+    steps:
+      - name: Install build dependencies
+        run: |
+          set -eu
+          printf '%s\n' 'deb-src http://deb.debian.org/debian trixie main' > /etc/apt/sources.list.d/visor-source.list
+          apt-get -q update
+          apt-get -qy --no-install-recommends install build-essential ca-certificates dbus git ninja-build libei-dev python3-dbusmock python3-pytest
+          apt-get -qy --no-install-recommends build-dep kwin xdg-desktop-portal-kde xdg-desktop-portal
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Compile patches and check queue cutoff and portal opt-in
+        shell: bash
+        env:
+          VISOR_TAKEOVER_EXPORT_DIR: ${{ matrix.arch == 'arm64' && format('{0}/visor-kde-candidate', runner.temp) || '' }}
+          VISOR_TAKEOVER_SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: bash experiments/wayland-takeover/qualify.sh
+      - name: Retain the ARM64 binaries for the isolated hardware session
+        if: matrix.arch == 'arm64'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: visor-kde-candidate-arm64
+          path: ${{ runner.temp }}/visor-kde-candidate/
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 3

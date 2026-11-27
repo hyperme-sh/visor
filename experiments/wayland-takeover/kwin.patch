@@ -1,0 +1,921 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 265c082..38b32c8 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -7,7 +7,8 @@ set(CMAKE_C_STANDARD 99)
+ set(CMAKE_CXX_STANDARD 23)
+ set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
+-set(PROJECT_DEP_VERSION "6.3.6")
++# Match the dependency floor used by Debian 13 for this Plasma build.
++set(PROJECT_DEP_VERSION "6.3.4")
+ set(QT_MIN_VERSION "6.7.0")
+ set(KF6_MIN_VERSION "6.10.0")
+ set(KDE_COMPILERSETTINGS_LEVEL "5.82")
+diff --git a/autotests/libinput/mock_libinput.cpp b/autotests/libinput/mock_libinput.cpp
+index 8a9c35f..179e1ef 100644
+--- a/autotests/libinput/mock_libinput.cpp
++++ b/autotests/libinput/mock_libinput.cpp
+@@ -530,6 +530,11 @@ enum libinput_key_state libinput_event_keyboard_get_key_state(struct libinput_ev
+     return event->state;
+ }
+
++uint32_t libinput_event_keyboard_get_seat_key_count(struct libinput_event_keyboard *event)
++{
++    return event->state == LIBINPUT_KEY_STATE_PRESSED ? 1 : 0;
++}
++
+ uint64_t libinput_event_keyboard_get_time_usec(struct libinput_event_keyboard *event)
+ {
+     return event->time.count();
+@@ -596,6 +601,11 @@ enum libinput_button_state libinput_event_pointer_get_button_state(struct libinp
+     return event->buttonState;
+ }
+
++uint32_t libinput_event_pointer_get_seat_button_count(struct libinput_event_pointer *event)
++{
++    return event->buttonState == LIBINPUT_BUTTON_STATE_PRESSED ? 1 : 0;
++}
++
+ int libinput_event_pointer_has_axis(struct libinput_event_pointer *event, enum libinput_pointer_axis axis)
+ {
+     if (axis == LIBINPUT_POINTER_AXIS_SCROLL_VERTICAL) {
+@@ -705,7 +715,12 @@ int libinput_dispatch(struct libinput *libinput)
+
+ struct libinput_event *libinput_get_event(struct libinput *libinput)
+ {
+-    return nullptr;
++    if (libinput->queuedEvents.empty()) {
++        return nullptr;
++    }
++    auto event = libinput->queuedEvents.front().release();
++    libinput->queuedEvents.pop();
++    return event;
+ }
+
+ void libinput_suspend(struct libinput *libinput)
+diff --git a/autotests/libinput/mock_libinput.h b/autotests/libinput/mock_libinput.h
+index db59543..c51d724 100644
+--- a/autotests/libinput/mock_libinput.h
++++ b/autotests/libinput/mock_libinput.h
+@@ -17,6 +17,8 @@
+
+ #include <array>
+ #include <chrono>
++#include <memory>
++#include <queue>
+
+ struct libinput_device
+ {
+@@ -167,6 +169,7 @@ struct libinput
+     int refCount = 1;
+     QByteArray seat;
+     int assignSeatRetVal = 0;
++    std::queue<std::unique_ptr<libinput_event>> queuedEvents;
+ };
+
+ #endif
+diff --git a/src/backends/libinput/connection.cpp b/src/backends/libinput/connection.cpp
+index 98f02eb..c6f7352 100644
+--- a/src/backends/libinput/connection.cpp
++++ b/src/backends/libinput/connection.cpp
+@@ -10,6 +10,7 @@
+ #include "context.h"
+ #include "device.h"
+ #include "events.h"
++#include "localtakeover.h"
+
+ // TODO: Make it compile also in testing environment
+ #ifndef KWIN_BUILD_TESTING
+@@ -235,6 +236,15 @@ TabletTool *Connection::getOrCreateTool(libinput_tablet_tool *handle)
+     return tool;
+ }
+
++void Connection::observePhysicalInput(const Event *event, bool pressed)
++{
++    // Include every local libinput device. Some Bluetooth and accessibility
++    // devices are behind virtual kernel buses. EIS never uses this path.
++    if (isLocalTakeoverEvent(event->type(), pressed)) {
++        Q_EMIT physicalInput();
++    }
++}
++
+ void Connection::processEvents()
+ {
+     QMutexLocker locker(&m_mutex);
+@@ -279,6 +289,7 @@ void Connection::processEvents()
+             KeyEvent *ke = static_cast<KeyEvent *>(event.get());
+             const int seatKeyCount = libinput_event_keyboard_get_seat_key_count(*ke);
+             const int keyState = libinput_event_keyboard_get_key_state(*ke);
++            observePhysicalInput(ke, keyState == LIBINPUT_KEY_STATE_PRESSED);
+             if ((keyState == LIBINPUT_KEY_STATE_PRESSED && seatKeyCount != 1) ||
+                 (keyState == LIBINPUT_KEY_STATE_RELEASED && seatKeyCount != 0)) {
+                 break;
+@@ -335,6 +346,7 @@ void Connection::processEvents()
+             PointerEvent *pe = static_cast<PointerEvent *>(event.get());
+             const int seatButtonCount = libinput_event_pointer_get_seat_button_count(*pe);
+             const int buttonState = libinput_event_pointer_get_button_state(*pe);
++            observePhysicalInput(pe, buttonState == LIBINPUT_BUTTON_STATE_PRESSED);
+             if ((buttonState == LIBINPUT_BUTTON_STATE_PRESSED && seatButtonCount != 1) ||
+                 (buttonState == LIBINPUT_BUTTON_STATE_RELEASED && seatButtonCount != 0)) {
+                 break;
+@@ -345,6 +357,7 @@ void Connection::processEvents()
+         }
+         case LIBINPUT_EVENT_POINTER_MOTION: {
+             PointerEvent *pe = static_cast<PointerEvent *>(event.get());
++            observePhysicalInput(pe);
+             auto delta = pe->delta();
+             auto deltaNonAccel = pe->deltaUnaccelerated();
+             auto latestTime = pe->time();
+@@ -352,6 +365,7 @@ void Connection::processEvents()
+             while (it != m_eventQueue.end()) {
+                 if ((*it)->type() == LIBINPUT_EVENT_POINTER_MOTION) {
+                     std::unique_ptr<PointerEvent> p{static_cast<PointerEvent *>(it->release())};
++                    observePhysicalInput(p.get());
+                     delta += p->delta();
+                     deltaNonAccel += p->deltaUnaccelerated();
+                     latestTime = p->time();
+@@ -366,6 +380,7 @@ void Connection::processEvents()
+         }
+         case LIBINPUT_EVENT_POINTER_MOTION_ABSOLUTE: {
+             PointerEvent *pe = static_cast<PointerEvent *>(event.get());
++            observePhysicalInput(pe);
+             if (workspace()) {
+                 Q_EMIT pe->device()->pointerMotionAbsolute(pe->absolutePos(workspace()->geometry().size()), pe->time(), pe->device());
+                 Q_EMIT pe->device()->pointerFrame(pe->device());
+diff --git a/src/backends/libinput/connection.h b/src/backends/libinput/connection.h
+index e64466e..d2feaeb 100644
+--- a/src/backends/libinput/connection.h
++++ b/src/backends/libinput/connection.h
+@@ -30,6 +30,7 @@ namespace KWin
+
+ class Session;
+ class Udev;
++class EisLocalTakeoverTest;
+
+ namespace LibInput
+ {
+@@ -66,13 +67,16 @@ Q_SIGNALS:
+     void deviceRemoved(KWin::LibInput::Device *);
+
+     void eventsRead();
++    void physicalInput();
+
+ private Q_SLOTS:
+     void slotKGlobalSettingsNotifyChange(int type, int arg);
+
+ private:
++    friend class KWin::EisLocalTakeoverTest;
+     Connection(std::unique_ptr<Context> &&input);
+     void handleEvent();
++    void observePhysicalInput(const Event *event, bool pressed = false);
+     void applyDeviceConfig(Device *device);
+     void applyScreenToDevice(Device *device);
+     void doSetup();
+diff --git a/src/backends/libinput/libinputbackend.cpp b/src/backends/libinput/libinputbackend.cpp
+index 2e3a187..8358928 100644
+--- a/src/backends/libinput/libinputbackend.cpp
++++ b/src/backends/libinput/libinputbackend.cpp
+@@ -32,6 +32,8 @@ LibinputBackend::LibinputBackend(Session *session, QObject *parent)
+             this, &InputBackend::deviceAdded, Qt::DirectConnection);
+     connect(m_connection, &LibInput::Connection::deviceRemoved,
+             this, &InputBackend::deviceRemoved, Qt::DirectConnection);
++    connect(m_connection, &LibInput::Connection::physicalInput,
++            this, &InputBackend::physicalInput, Qt::DirectConnection);
+ }
+
+ LibinputBackend::~LibinputBackend()
+@@ -53,6 +55,11 @@ void LibinputBackend::updateScreens()
+     m_connection->updateScreens();
+ }
+
++bool LibinputBackend::hasPhysicalSeat() const
++{
++    return m_connection != nullptr;
++}
++
+ } // namespace KWin
+
+ #include "moc_libinputbackend.cpp"
+diff --git a/src/backends/libinput/libinputbackend.h b/src/backends/libinput/libinputbackend.h
+index 5f00d25..054c84b 100644
+--- a/src/backends/libinput/libinputbackend.h
++++ b/src/backends/libinput/libinputbackend.h
+@@ -30,6 +30,7 @@ public:
+
+     void initialize() override;
+     void updateScreens() override;
++    bool hasPhysicalSeat() const override;
+
+ private:
+     QThread m_thread;
+diff --git a/src/backends/libinput/localtakeover.h b/src/backends/libinput/localtakeover.h
+new file mode 100644
+index 0000000..16fd9aa
+--- /dev/null
++++ b/src/backends/libinput/localtakeover.h
+@@ -0,0 +1,26 @@
++/*
++    SPDX-License-Identifier: GPL-2.0-or-later
++*/
++
++#pragma once
++
++#include <libinput.h>
++
++namespace KWin::LibInput
++{
++
++inline bool isLocalTakeoverEvent(libinput_event_type type, bool pressed)
++{
++    switch (type) {
++    case LIBINPUT_EVENT_KEYBOARD_KEY:
++    case LIBINPUT_EVENT_POINTER_BUTTON:
++        return pressed;
++    case LIBINPUT_EVENT_POINTER_MOTION:
++    case LIBINPUT_EVENT_POINTER_MOTION_ABSOLUTE:
++        return true;
++    default:
++        return false;
++    }
++}
++
++} // namespace KWin::LibInput
+diff --git a/src/core/inputbackend.h b/src/core/inputbackend.h
+index 0dd0169..d3de446 100644
+--- a/src/core/inputbackend.h
++++ b/src/core/inputbackend.h
+@@ -35,9 +35,15 @@ public:
+     {
+     }
+
++    virtual bool hasPhysicalSeat() const
++    {
++        return false;
++    }
++
+ Q_SIGNALS:
+     void deviceAdded(InputDevice *device);
+     void deviceRemoved(InputDevice *device);
++    void physicalInput();
+
+ private:
+     KSharedConfigPtr m_config;
+diff --git a/src/input.cpp b/src/input.cpp
+index c0faee3..4e2b9c5 100644
+--- a/src/input.cpp
++++ b/src/input.cpp
+@@ -3315,6 +3315,7 @@ void InputRedirection::addInputBackend(std::unique_ptr<InputBackend> &&inputBack
+ {
+     connect(inputBackend.get(), &InputBackend::deviceAdded, this, &InputRedirection::addInputDevice);
+     connect(inputBackend.get(), &InputBackend::deviceRemoved, this, &InputRedirection::removeInputDevice);
++    connect(inputBackend.get(), &InputBackend::physicalInput, this, &InputRedirection::physicalInput, Qt::DirectConnection);
+
+     inputBackend->setConfig(kwinApp()->inputConfig());
+     inputBackend->initialize();
+@@ -3322,6 +3323,13 @@ void InputRedirection::addInputBackend(std::unique_ptr<InputBackend> &&inputBack
+     m_inputBackends.push_back(std::move(inputBackend));
+ }
+
++bool InputRedirection::hasPhysicalSeat() const
++{
++    return std::ranges::any_of(m_inputBackends, [](const auto &backend) {
++        return backend->hasPhysicalSeat();
++    });
++}
++
+ void InputRedirection::setupInputBackends()
+ {
+     std::unique_ptr<InputBackend> inputBackend = kwinApp()->outputBackend()->createInputBackend();
+diff --git a/src/input.h b/src/input.h
+index 569fac2..8dd7f6e 100644
+--- a/src/input.h
++++ b/src/input.h
+@@ -206,8 +206,10 @@ public:
+     void addInputDevice(InputDevice *device);
+     void removeInputDevice(InputDevice *device);
+     void addInputBackend(std::unique_ptr<InputBackend> &&inputBackend);
++    bool hasPhysicalSeat() const;
+
+ Q_SIGNALS:
++    void physicalInput();
+     void deviceAdded(InputDevice *device);
+     void deviceRemoved(InputDevice *device);
+     /**
+diff --git a/src/plugins/eis/CMakeLists.txt b/src/plugins/eis/CMakeLists.txt
+index 61ac515..574a281 100644
+--- a/src/plugins/eis/CMakeLists.txt
++++ b/src/plugins/eis/CMakeLists.txt
+@@ -29,3 +29,26 @@ target_sources(eis PRIVATE
+ )
+
+ target_link_libraries(eis PRIVATE kwin KF6::I18n KF6::GlobalAccel Libeis::Libeis XKB::XKB)
++
++option(KWIN_BUILD_LOCAL_TAKEOVER_TEST "Build the EIS local takeover contract" OFF)
++if (KWIN_BUILD_LOCAL_TAKEOVER_TEST)
++    find_package(PkgConfig REQUIRED)
++    pkg_check_modules(TakeoverEI REQUIRED IMPORTED_TARGET libei-1.0)
++    find_package(Qt6Test REQUIRED)
++    add_executable(eisLocalTakeoverContract
++        localtakeovertest.cpp
++        eisdevice.cpp
++        eisbackend.cpp
++        eiscontext.cpp
++        ${CMAKE_CURRENT_BINARY_DIR}/libeis_logging.cpp
++        ${CMAKE_SOURCE_DIR}/autotests/libinput/mock_libinput.cpp
++    )
++    target_include_directories(eisLocalTakeoverContract PRIVATE ${CMAKE_SOURCE_DIR}/autotests/libinput)
++    # The contract substitutes libinput symbols called by the real KWin library.
++    set_target_properties(eisLocalTakeoverContract PROPERTIES
++        ENABLE_EXPORTS ON
++        CXX_VISIBILITY_PRESET default
++        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
++    )
++    target_link_libraries(eisLocalTakeoverContract PRIVATE kwin Qt::Test Qt::Widgets KF6::ConfigCore KF6::GlobalAccel Libeis::Libeis Libinput::Libinput PkgConfig::TakeoverEI XKB::XKB)
++endif()
+diff --git a/src/plugins/eis/eisbackend.cpp b/src/plugins/eis/eisbackend.cpp
+index bbdfebc..f1e5f33 100644
+--- a/src/plugins/eis/eisbackend.cpp
++++ b/src/plugins/eis/eisbackend.cpp
+@@ -11,6 +11,7 @@
+ #include "libeis_logging.h"
+
+ #include "core/output.h"
++#include "core/session.h"
+ #include "input.h"
+ #include "keyboard_input.h"
+ #include "keyboard_layout.h"
+@@ -19,7 +20,9 @@
+ #include "xkb.h"
+
+ #include <QDBusConnection>
++#include <QDBusConnectionInterface>
+ #include <QDBusMessage>
++#include <QDBusReply>
+ #include <QDBusServiceWatcher>
+ #include <QFlags>
+ #include <QSocketNotifier>
+@@ -51,6 +54,14 @@ EisBackend::~EisBackend()
+
+ void EisBackend::initialize()
+ {
++    connect(input(), &InputRedirection::physicalInput, this, &EisBackend::stopOnLocalInput);
++    if (auto session = kwinApp()->session()) {
++        connect(session, &Session::activeChanged, this, [this](bool active) {
++            if (!active) {
++                stopOnLocalInput();
++            }
++        });
++    }
+     const QByteArray keyMap = input()->keyboard()->xkb()->keymapContents();
+     if (!keyMap.isEmpty()) {
+         m_keymapFile = RamFile("eis keymap", keyMap.data(), keyMap.size(), RamFile::Flag::SealWrite);
+@@ -78,6 +89,26 @@ void EisBackend::updateScreens()
+ }
+
+ QDBusUnixFileDescriptor EisBackend::connectToEIS(const int &capabilities, int &cookie)
++{
++    return createContext(capabilities, cookie, false);
++}
++
++QDBusUnixFileDescriptor EisBackend::connectToEISWithLocalTakeover(const int &capabilities, int &cookie)
++{
++    const auto owner = QDBusConnection::sessionBus().interface()->serviceOwner(QStringLiteral("org.freedesktop.impl.portal.desktop.kde"));
++    if (!owner.isValid() || owner.value() != message().service()) {
++        sendErrorReply(QDBusError::AccessDenied, QStringLiteral("Only the KDE portal can authorize local takeover"));
++        return {};
++    }
++    const auto session = kwinApp()->session();
++    if (!session || !session->isActive() || !input()->hasPhysicalSeat()) {
++        sendErrorReply(QDBusError::NotSupported, QStringLiteral("No active native libinput seat"));
++        return {};
++    }
++    return createContext(capabilities, cookie, true);
++}
++
++QDBusUnixFileDescriptor EisBackend::createContext(int capabilities, int &cookie, bool stopOnLocalInput)
+ {
+     constexpr int keyboardPortal = 1;
+     constexpr int pointerPortal = 2;
+@@ -97,10 +128,58 @@ QDBusUnixFileDescriptor EisBackend::connectToEIS(const int &capabilities, int &c
+     }
+     const QString dbusService = message().service();
+     static int s_cookie = 0;
+-    cookie = ++s_cookie;
+-    m_contexts.push_back(std::make_unique<EisContext>(this, eisCapabilities, cookie, dbusService));
++    auto context = std::make_unique<EisContext>(this, eisCapabilities, ++s_cookie, dbusService, stopOnLocalInput);
++    const int fd = context->addClient();
++    if (fd < 0) {
++        sendErrorReply(QDBusError::Failed, QStringLiteral("Unable to open EIS connection"));
++        return {};
++    }
++    QDBusUnixFileDescriptor descriptor;
++    descriptor.giveFileDescriptor(fd);
++    cookie = context->cookie;
++    m_contexts.push_back(std::move(context));
+     m_serviceWatcher->addWatchedService(dbusService);
+-    return QDBusUnixFileDescriptor(m_contexts.back()->addClient());
++    return descriptor;
++}
++
++void EisBackend::stopOnLocalInput()
++{
++    std::vector<int> stopped;
++    for (const auto &context : m_contexts) {
++        if (context->stopOnLocalInput()) {
++            stopped.push_back(context->cookie);
++        }
++    }
++
++    const auto findContext = [this](int cookie) {
++        return std::ranges::find(m_contexts, cookie, &EisContext::cookie);
++    };
++    for (const int cookie : stopped) {
++        const auto context = findContext(cookie);
++        if (context != m_contexts.end()) {
++            (*context)->releaseHeldInputs();
++        }
++    }
++    if (!stopped.empty()) {
++        // Keep any currently executing EIS callback alive until it unwinds.
++        QMetaObject::invokeMethod(this, [this, stopped = std::move(stopped), findContext] {
++            const auto bus = QDBusConnection::sessionBus();
++            for (const int cookie : stopped) {
++                const auto context = findContext(cookie);
++                if (context == m_contexts.end()) {
++                    continue;
++                }
++                auto notification = QDBusMessage::createTargetedSignal(
++                    (*context)->dbusService,
++                    QStringLiteral("/org/kde/KWin/EIS/RemoteDesktop"),
++                    QStringLiteral("org.kde.KWin.EIS.RemoteDesktop"),
++                    QStringLiteral("LocalTakeover"));
++                notification << cookie;
++                m_contexts.erase(context);
++                bus.send(notification);
++            }
++        }, Qt::QueuedConnection);
++    }
+ }
+
+ void EisBackend::disconnect(int cookie)
+@@ -108,7 +187,7 @@ void EisBackend::disconnect(int cookie)
+     auto it = std::ranges::find(m_contexts, cookie, [](const std::unique_ptr<EisContext> &context) {
+         return context->cookie;
+     });
+-    if (it != std::ranges::end(m_contexts)) {
++    if (it != std::ranges::end(m_contexts) && (*it)->dbusService == message().service()) {
+         m_contexts.erase(it);
+     }
+ }
+diff --git a/src/plugins/eis/eisbackend.h b/src/plugins/eis/eisbackend.h
+index a34d403..48e4a8b 100644
+--- a/src/plugins/eis/eisbackend.h
++++ b/src/plugins/eis/eisbackend.h
+@@ -37,6 +37,7 @@ public:
+     void updateScreens() override;
+
+     Q_INVOKABLE QDBusUnixFileDescriptor connectToEIS(const int &capabilities, int &cookie);
++    Q_INVOKABLE QDBusUnixFileDescriptor connectToEISWithLocalTakeover(const int &capabilities, int &cookie);
+     Q_INVOKABLE void disconnect(int cookie);
+
+     eis_device *createKeyboard(eis_seat *seat);
+@@ -44,6 +45,9 @@ public:
+     eis_device *createAbsoluteDevice(eis_seat *seat);
+
+ private:
++    friend class EisLocalTakeoverTest;
++    QDBusUnixFileDescriptor createContext(int capabilities, int &cookie, bool stopOnLocalInput);
++    void stopOnLocalInput();
+     QDBusServiceWatcher *m_serviceWatcher;
+     RamFile m_keymapFile;
+     std::vector<std::unique_ptr<EisContext>> m_contexts;
+diff --git a/src/plugins/eis/eiscontext.cpp b/src/plugins/eis/eiscontext.cpp
+index 015e041..b54aacd 100644
+--- a/src/plugins/eis/eiscontext.cpp
++++ b/src/plugins/eis/eiscontext.cpp
+@@ -52,13 +52,14 @@ public:
+     std::unique_ptr<EisDevice> keyboard;
+ };
+
+-EisContext::EisContext(KWin::EisBackend *backend, QFlags<eis_device_capability> allowedCapabilities, int cookie, const QString &dbusService)
++EisContext::EisContext(KWin::EisBackend *backend, QFlags<eis_device_capability> allowedCapabilities, int cookie, const QString &dbusService, bool stopOnLocalInput)
+     : cookie(cookie)
+     , dbusService(dbusService)
+     , m_backend(backend)
+     , m_eisContext(eis_new(this))
+     , m_allowedCapabilities(allowedCapabilities)
+     , m_socketNotifier(eis_get_fd(m_eisContext), QSocketNotifier::Read)
++    , m_localTakeover(stopOnLocalInput)
+ {
+     eis_setup_backend_fd(m_eisContext);
+     eis_log_set_priority(m_eisContext, EIS_LOG_PRIORITY_DEBUG);
+@@ -70,6 +71,7 @@ EisContext::EisContext(KWin::EisBackend *backend, QFlags<eis_device_capability>
+
+ EisContext::~EisContext()
+ {
++    m_socketNotifier.setEnabled(false);
+     for (const auto &client : m_clients) {
+         if (client->absoluteDevice) {
+             Q_EMIT m_backend->deviceRemoved(client->absoluteDevice.get());
+@@ -81,6 +83,28 @@ EisContext::~EisContext()
+             Q_EMIT m_backend->deviceRemoved(client->keyboard.get());
+         }
+     }
++    m_clients.clear();
++    eis_unref(m_eisContext);
++}
++
++bool EisContext::stopOnLocalInput()
++{
++    if (!m_localTakeover.stop()) {
++        return false;
++    }
++    m_socketNotifier.setEnabled(false);
++    return true;
++}
++
++void EisContext::releaseHeldInputs()
++{
++    for (const auto &client : m_clients) {
++        for (const auto device : {client->absoluteDevice.get(), client->pointer.get(), client->keyboard.get()}) {
++            if (device) {
++                device->releaseHeldInputs();
++            }
++        }
++    }
+ }
+
+ void EisContext::updateScreens()
+@@ -113,13 +137,20 @@ static std::chrono::microseconds currentTime()
+
+ void EisContext::handleEvents()
+ {
++    if (m_localTakeover.stopped()) {
++        return;
++    }
+     auto eventDevice = [](eis_event *event) {
+         return static_cast<EisDevice *>(eis_device_get_user_data(eis_event_get_device(event)));
+     };
+
+     eis_dispatch(m_eisContext);
+
+-    while (eis_event *const event = eis_get_event(m_eisContext)) {
++    while (!m_localTakeover.stopped()) {
++        eis_event *const event = eis_get_event(m_eisContext);
++        if (!event) {
++            break;
++        }
+         switch (eis_event_get_type(event)) {
+         case EIS_EVENT_CLIENT_CONNECT: {
+             auto client = eis_event_get_client(event);
+diff --git a/src/plugins/eis/eiscontext.h b/src/plugins/eis/eiscontext.h
+index fd8f676..a019fea 100644
+--- a/src/plugins/eis/eiscontext.h
++++ b/src/plugins/eis/eiscontext.h
+@@ -6,6 +6,8 @@
+
+ #pragma once
+
++#include "localtakeovergate.h"
++
+ #include <QFlag>
+ #include <QSocketNotifier>
+ #include <QString>
+@@ -24,12 +26,14 @@ struct EisClient;
+ class EisContext
+ {
+ public:
+-    EisContext(EisBackend *backend, QFlags<eis_device_capability> allowedCapabilities, int cookie, const QString &dbusService);
++    EisContext(EisBackend *backend, QFlags<eis_device_capability> allowedCapabilities, int cookie, const QString &dbusService, bool stopOnLocalInput);
+     ~EisContext();
+
+     int addClient();
+     void updateScreens();
+     void updateKeymap();
++    bool stopOnLocalInput();
++    void releaseHeldInputs();
+
+     const int cookie;
+     const QString dbusService;
+@@ -42,6 +46,7 @@ private:
+     QFlags<eis_device_capability> m_allowedCapabilities;
+     QSocketNotifier m_socketNotifier;
+     std::vector<std::unique_ptr<EisClient>> m_clients;
++    LocalTakeoverGate m_localTakeover;
+ };
+
+ }
+diff --git a/src/plugins/eis/eisdevice.cpp b/src/plugins/eis/eisdevice.cpp
+index aa58dba..8f1c77d 100644
+--- a/src/plugins/eis/eisdevice.cpp
++++ b/src/plugins/eis/eisdevice.cpp
+@@ -7,6 +7,7 @@
+ #include "eisdevice.h"
+
+ #include <libeis.h>
++#include <utility>
+
+ namespace KWin
+ {
+@@ -26,17 +27,23 @@ EisDevice::EisDevice(eis_device *device, QObject *parent)
+
+ EisDevice::~EisDevice()
+ {
+-    for (const auto button : pressedButtons) {
++    releaseHeldInputs();
++    eis_device_remove(m_device);
++    eis_device_unref(m_device);
++}
++
++void EisDevice::releaseHeldInputs()
++{
++    for (const auto button : std::exchange(pressedButtons, {})) {
+         Q_EMIT pointerButtonChanged(button, PointerButtonState::Released, currentTime(), this);
+     }
+-    for (const auto key : pressedKeys) {
++    for (const auto key : std::exchange(pressedKeys, {})) {
+         Q_EMIT keyChanged(key, KeyboardKeyState::Released, currentTime(), this);
+     }
+     if (!activeTouches.empty()) {
++        activeTouches.clear();
+         Q_EMIT touchCanceled(this);
+     }
+-    eis_device_remove(m_device);
+-    eis_device_unref(m_device);
+ }
+
+ void EisDevice::changeDevice(eis_device *device)
+diff --git a/src/plugins/eis/eisdevice.h b/src/plugins/eis/eisdevice.h
+index 1549367..56987bf 100644
+--- a/src/plugins/eis/eisdevice.h
++++ b/src/plugins/eis/eisdevice.h
+@@ -25,6 +25,7 @@ public:
+         return m_device;
+     }
+     void changeDevice(eis_device *device);
++    void releaseHeldInputs();
+
+     QSet<quint32> pressedButtons;
+     QSet<quint32> pressedKeys;
+diff --git a/src/plugins/eis/localtakeovergate.h b/src/plugins/eis/localtakeovergate.h
+new file mode 100644
+index 0000000..e5c022f
+--- /dev/null
++++ b/src/plugins/eis/localtakeovergate.h
+@@ -0,0 +1,37 @@
++/*
++    SPDX-License-Identifier: GPL-2.0-only OR GPL-3.0-only OR LicenseRef-KDE-Accepted-GPL
++*/
++
++#pragma once
++
++namespace KWin
++{
++
++class LocalTakeoverGate
++{
++public:
++    explicit LocalTakeoverGate(bool enabled)
++        : m_enabled(enabled)
++    {
++    }
++
++    bool stop()
++    {
++        if (!m_enabled || m_stopped) {
++            return false;
++        }
++        m_stopped = true;
++        return true;
++    }
++
++    bool stopped() const
++    {
++        return m_stopped;
++    }
++
++private:
++    const bool m_enabled;
++    bool m_stopped = false;
++};
++
++} // namespace KWin
+diff --git a/src/plugins/eis/localtakeovertest.cpp b/src/plugins/eis/localtakeovertest.cpp
+new file mode 100644
+index 0000000..94f814b
+--- /dev/null
++++ b/src/plugins/eis/localtakeovertest.cpp
+@@ -0,0 +1,212 @@
++/*
++    SPDX-License-Identifier: GPL-2.0-only OR GPL-3.0-only OR LicenseRef-KDE-Accepted-GPL
++*/
++
++#include "backends/libinput/connection.h"
++#include "backends/libinput/context.h"
++#include "backends/libinput/device.h"
++#include "backends/libinput/localtakeover.h"
++#include "core/inputdevice.h"
++#include "core/session.h"
++#include "eisbackend.h"
++#include "eiscontext.h"
++#include "mock_libinput.h"
++
++#include <QDBusConnection>
++#include <QTest>
++
++#include <libei.h>
++#include <linux/input-event-codes.h>
++
++namespace KWin
++{
++
++class Sender
++{
++public:
++    explicit Sender(int fd)
++    {
++        ei_configure_name(m_ei.get(), "local takeover contract");
++        connected = ei_setup_backend_fd(m_ei.get(), fd) == 0;
++    }
++
++    void dispatch()
++    {
++        ei_dispatch(m_ei.get());
++        while (auto event = ei_get_event(m_ei.get())) {
++            switch (ei_event_get_type(event)) {
++            case EI_EVENT_SEAT_ADDED:
++                ei_seat_bind_capabilities(ei_event_get_seat(event), EI_DEVICE_CAP_POINTER, EI_DEVICE_CAP_BUTTON, nullptr);
++                break;
++            case EI_EVENT_DEVICE_RESUMED:
++                pointer.reset(ei_device_ref(ei_event_get_device(event)));
++                ei_device_start_emulating(pointer.get(), 1);
++                break;
++            case EI_EVENT_DISCONNECT:
++                disconnected = true;
++                break;
++            default:
++                break;
++            }
++            ei_event_unref(event);
++        }
++    }
++
++    void move()
++    {
++        ei_device_pointer_motion(pointer.get(), 1, 0);
++        ei_device_frame(pointer.get(), ei_now(m_ei.get()));
++    }
++
++    void holdButton()
++    {
++        ei_device_button_button(pointer.get(), BTN_LEFT, true);
++        ei_device_frame(pointer.get(), ei_now(m_ei.get()));
++    }
++
++private:
++    std::unique_ptr<ei, decltype(&ei_unref)> m_ei{ei_new_sender(nullptr), ei_unref};
++
++public:
++    std::unique_ptr<ei_device, decltype(&ei_device_unref)> pointer{nullptr, ei_device_unref};
++    bool connected = false;
++    bool disconnected = false;
++};
++
++class EisLocalTakeoverTest : public QObject
++{
++    Q_OBJECT
++
++private Q_SLOTS:
++    void queuedInputStops_data()
++    {
++        QTest::addColumn<int>("eventType");
++        QTest::addColumn<bool>("pressed");
++        QTest::newRow("mouse motion") << int(LIBINPUT_EVENT_POINTER_MOTION) << false;
++        QTest::newRow("key press") << int(LIBINPUT_EVENT_KEYBOARD_KEY) << true;
++        QTest::newRow("button press") << int(LIBINPUT_EVENT_POINTER_BUTTON) << true;
++    }
++
++    void queuedInputStops()
++    {
++        QFETCH(int, eventType);
++        QFETCH(bool, pressed);
++        const auto type = static_cast<libinput_event_type>(eventType);
++        QVERIFY(!LibInput::isLocalTakeoverEvent(LIBINPUT_EVENT_KEYBOARD_KEY, false));
++        QVERIFY(!LibInput::isLocalTakeoverEvent(LIBINPUT_EVENT_POINTER_BUTTON, false));
++
++        const auto service = QDBusConnection::sessionBus().baseService();
++        QVERIFY(!service.isEmpty());
++        m_interruptedCookie = 0;
++        QVERIFY(QDBusConnection::sessionBus().connect(service,
++            QStringLiteral("/org/kde/KWin/EIS/RemoteDesktop"),
++            QStringLiteral("org.kde.KWin.EIS.RemoteDesktop"),
++            QStringLiteral("LocalTakeover"), this, SLOT(recordLocalTakeover(int))));
++        int motions = 0;
++        int holds = 0;
++        int releases = 0;
++        EisBackend backend;
++        auto seat = Session::create(Session::Type::Noop);
++        QVERIFY(seat);
++        std::unique_ptr<LibInput::Connection> nativeConnection(LibInput::Connection::create(seat.get()));
++        QVERIFY(nativeConnection);
++        connect(nativeConnection.get(), &LibInput::Connection::physicalInput, &backend, &EisBackend::stopOnLocalInput);
++        libinput_device fakeDevice;
++        fakeDevice.keyboard = true;
++        fakeDevice.pointer = true;
++        LibInput::Device nativeDevice(&fakeDevice);
++        int forwardedLocalEvents = 0;
++        const auto onLocalEvent = [&] {
++            QCOMPARE(releases, 1);
++            ++forwardedLocalEvents;
++        };
++        connect(&nativeDevice, &InputDevice::pointerMotion, this, onLocalEvent);
++        connect(&nativeDevice, &InputDevice::keyChanged, this, onLocalEvent);
++        connect(&nativeDevice, &InputDevice::pointerButtonChanged, this, onLocalEvent);
++
++        connect(&backend, &InputBackend::deviceAdded, this, [&](InputDevice *device) {
++            connect(device, &InputDevice::pointerMotion, device, [&] {
++                ++motions;
++            });
++            connect(device, &InputDevice::pointerButtonChanged, device, [&](uint32_t, PointerButtonState state) {
++                if (state == PointerButtonState::Pressed) {
++                    ++holds;
++                } else {
++                    ++releases;
++                }
++            });
++        });
++
++        const auto capabilities = QFlags{EIS_DEVICE_CAP_POINTER} | EIS_DEVICE_CAP_BUTTON;
++        auto optedIn = std::make_unique<EisContext>(&backend, capabilities, 1, service, true);
++        auto ordinary = std::make_unique<EisContext>(&backend, capabilities, 2, service, false);
++        Sender sender(optedIn->addClient());
++        Sender ordinarySender(ordinary->addClient());
++        backend.m_contexts.push_back(std::move(optedIn));
++        backend.m_contexts.push_back(std::move(ordinary));
++        QVERIFY(sender.connected);
++        QVERIFY(ordinarySender.connected);
++        QTRY_VERIFY((sender.dispatch(), bool(sender.pointer)));
++        QTRY_VERIFY((ordinarySender.dispatch(), bool(ordinarySender.pointer)));
++
++        sender.move();
++        sender.holdButton();
++        QTRY_COMPARE(motions, 1);
++        QTRY_COMPARE(holds, 1);
++
++        sender.move();
++        QVERIFY(LibInput::isLocalTakeoverEvent(type, pressed));
++        // The EIS request is already queued. Deliver a native libinput event
++        // through the production dispatcher before running the Qt EIS notifier.
++        auto input = static_cast<libinput *>(*nativeConnection->m_input);
++        input->queuedEvents.push(makeLocalEvent(type, &fakeDevice));
++        nativeConnection->handleEvent();
++        nativeConnection->processEvents();
++        QCOMPARE(releases, 1);
++        QCOMPARE(forwardedLocalEvents, 1);
++
++        ordinarySender.move();
++        QTRY_VERIFY((sender.dispatch(), sender.disconnected));
++        QTRY_COMPARE(m_interruptedCookie, 1);
++        QTRY_COMPARE(motions, 2);
++        QCOMPARE(releases, 1);
++        QCOMPARE(backend.m_contexts.size(), 1);
++        QCOMPARE(backend.m_contexts.front()->cookie, 2);
++        QVERIFY(!ordinarySender.disconnected);
++        QVERIFY(QDBusConnection::sessionBus().disconnect(service,
++            QStringLiteral("/org/kde/KWin/EIS/RemoteDesktop"),
++            QStringLiteral("org.kde.KWin.EIS.RemoteDesktop"),
++            QStringLiteral("LocalTakeover"), this, SLOT(recordLocalTakeover(int))));
++    }
++
++    void recordLocalTakeover(int cookie)
++    {
++        m_interruptedCookie = cookie;
++    }
++
++private:
++    int m_interruptedCookie = 0;
++
++    static std::unique_ptr<libinput_event> makeLocalEvent(libinput_event_type type, libinput_device *device)
++    {
++        if (type == LIBINPUT_EVENT_KEYBOARD_KEY) {
++            auto event = std::make_unique<libinput_event_keyboard>();
++            event->device = device;
++            event->state = LIBINPUT_KEY_STATE_PRESSED;
++            event->key = KEY_A;
++            return event;
++        }
++        auto event = std::make_unique<libinput_event_pointer>();
++        event->type = type;
++        event->device = device;
++        event->delta = QPointF(3, 0);
++        event->buttonState = LIBINPUT_BUTTON_STATE_PRESSED;
++        event->button = BTN_LEFT;
++        return event;
++    }
++};
++
++} // namespace KWin
++
++QTEST_GUILESS_MAIN(KWin::EisLocalTakeoverTest)
++#include "localtakeovertest.moc"

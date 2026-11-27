@@ -72,6 +72,10 @@ that physical input still reaches the desktop under its normal rules,
 another session is unaffected, and an unadvertised capability keeps
 Visor's input disabled.
 
+The [KWin and portal prototype](../experiments/wayland-takeover/README.md)
+implements the proposed hook and opt-in in pinned upstream source patches.
+Its contract tests use KWin's mock libinput events and real EIS senders.
+
 ## What an input backend must establish
 
 - Local pointer motion, button presses, and key presses pause automation

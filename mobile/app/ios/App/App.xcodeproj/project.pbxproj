@@ -19,6 +19,7 @@
 		A10000000000000000000001 /* hypermesh_visor_mobile.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000001; };
 		A10000000000000000000002 /* KeychainSessionStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000002; };
 		A10000000000000000000003 /* HypermeshVisorMobile.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = A20000000000000000000003; };
+		C10000000000000000000001 /* PhoneFooterUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C10000000000000000000002; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -36,6 +37,8 @@
 		A20000000000000000000001 /* hypermesh_visor_mobile.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Native/hypermesh_visor_mobile.swift; sourceTree = SOURCE_ROOT; };
 		A20000000000000000000002 /* KeychainSessionStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Native/KeychainSessionStore.swift; sourceTree = SOURCE_ROOT; };
 		A20000000000000000000003 /* HypermeshVisorMobile.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; path = Native/HypermeshVisorMobile.xcframework; sourceTree = SOURCE_ROOT; };
+		C10000000000000000000002 /* PhoneFooterUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhoneFooterUITests/PhoneFooterUITests.swift; sourceTree = "<group>"; };
+		C10000000000000000000003 /* PhoneFooterUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = PhoneFooterUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -56,6 +59,7 @@
 			children = (
 				958DCC722DB07C7200EA8C5F /* debug.xcconfig */,
 				504EC3061FED79650016851F /* App */,
+				C10000000000000000000002 /* PhoneFooterUITests.swift */,
 				504EC3051FED79650016851F /* Products */,
 			);
 			sourceTree = "<group>";
@@ -64,6 +68,7 @@
 			isa = PBXGroup;
 			children = (
 				504EC3041FED79650016851F /* App.app */,
+				C10000000000000000000003 /* PhoneFooterUITests.xctest */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -109,6 +114,17 @@
 			productReference = 504EC3041FED79650016851F /* App.app */;
 			productType = "com.apple.product-type.application";
 		};
+		C10000000000000000000004 /* PhoneFooterUITests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = C10000000000000000000006;
+			buildPhases = (C10000000000000000000005,);
+			buildRules = ();
+			dependencies = (C10000000000000000000009,);
+			name = PhoneFooterUITests;
+			productName = PhoneFooterUITests;
+			productReference = C10000000000000000000003;
+			productType = "com.apple.product-type.bundle.ui-testing";
+		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -122,6 +138,9 @@
 						CreatedOnToolsVersion = 9.2;
 						LastSwiftMigration = 1100;
 						ProvisioningStyle = Automatic;
+					};
+					C10000000000000000000004 = {
+						TestTargetID = 504EC3031FED79650016851F;
 					};
 				};
 			};
@@ -144,6 +163,7 @@
 			targets = (
 				B1000000000000000000000D,
 				504EC3031FED79650016851F /* App */,
+				C10000000000000000000004 /* PhoneFooterUITests */,
 			);
 		};
 /* End PBXProject section */
@@ -165,6 +185,12 @@
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
+		C10000000000000000000005 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (C10000000000000000000001,);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		504EC3001FED79650016851F /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -199,6 +225,30 @@
 /* End PBXVariantGroup section */
 
 /* Begin XCBuildConfiguration section */
+		C10000000000000000000007 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				GENERATE_INFOPLIST_FILE = YES;
+				PRODUCT_BUNDLE_IDENTIFIER = sh.hyperme.visor.mobile.footer-uitests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_TARGET_NAME = App;
+			};
+			name = Debug;
+		};
+		C10000000000000000000008 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				GENERATE_INFOPLIST_FILE = YES;
+				PRODUCT_BUNDLE_IDENTIFIER = sh.hyperme.visor.mobile.footer-uitests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_TARGET_NAME = App;
+			};
+			name = Release;
+		};
 		504EC3141FED79650016851F /* Debug */ = {
 			isa = XCBuildConfiguration;
 			baseConfigurationReference = 958DCC722DB07C7200EA8C5F /* debug.xcconfig */;
@@ -359,6 +409,12 @@
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
+		C10000000000000000000006 /* Build configuration list for PhoneFooterUITests */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (C10000000000000000000007, C10000000000000000000008,);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
 		504EC2FF1FED79650016851F /* Build configuration list for PBXProject "App" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
@@ -378,6 +434,24 @@
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
+
+/* Begin PBXContainerItemProxy section */
+		C1000000000000000000000A /* App */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 504EC2FC1FED79650016851F;
+			proxyType = 1;
+			remoteGlobalIDString = 504EC3031FED79650016851F;
+			remoteInfo = App;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXTargetDependency section */
+		C10000000000000000000009 /* App */ = {
+			isa = PBXTargetDependency;
+			target = 504EC3031FED79650016851F;
+			targetProxy = C1000000000000000000000A;
+		};
+/* End PBXTargetDependency section */
 
 /* Begin XCLocalSwiftPackageReference section */
 		D4C12C0A2AAA248700AAC8A2 /* XCLocalSwiftPackageReference "CapApp-SPM" */ = {

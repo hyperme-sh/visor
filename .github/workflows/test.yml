@@ -364,14 +364,15 @@ jobs:
           npm run build
           npx cap sync ios
           bash build-apple-tunnel.sh
-          for sdk in iphonesimulator iphoneos; do
-            destination='generic/platform=iOS'
-            if [[ "$sdk" == iphonesimulator ]]; then destination='generic/platform=iOS Simulator'; fi
-            xcodebuild -project ios/App/App.xcodeproj -scheme App -configuration Release \
-              -sdk "$sdk" -destination "$destination" \
-              -derivedDataPath "$RUNNER_TEMP/visor-capacitor-apple-$sdk" \
-              ARCHS=arm64 ONLY_ACTIVE_ARCH=YES CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO build -quiet
-          done
+          xcodebuild -project ios/App/App.xcodeproj -scheme App -configuration Release \
+            -sdk iphoneos -destination 'generic/platform=iOS' \
+            -derivedDataPath "$RUNNER_TEMP/visor-capacitor-apple-iphoneos" \
+            ARCHS=arm64 ONLY_ACTIVE_ARCH=YES CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO build -quiet
+      - name: Verify the installed iOS version and build in the footer
+        if: matrix.os == 'macos-latest'
+        working-directory: mobile/app
+        timeout-minutes: 15
+        run: bash test-ios-footer.sh
       - name: Build unsigned Capacitor Android enrollment app
         if: matrix.os == 'ubuntu-latest'
         shell: bash
@@ -385,6 +386,11 @@ jobs:
           npx cap sync android
           cd android
           ./gradlew --no-daemon assembleRelease
+      - name: Verify the installed Android version and build in the footer
+        if: matrix.os == 'ubuntu-latest'
+        working-directory: mobile/app
+        timeout-minutes: 15
+        run: bash test-android-footer.sh android/app/build/outputs/apk/release/app-release-unsigned.apk
       - uses: actions/setup-go@v6
         if: matrix.os == 'windows-latest'
         with:

@@ -12,10 +12,13 @@ concurrency:
 jobs:
   native-desktop:
     needs: linux
+    if: ${{ !cancelled() && needs.linux.outputs.wsl_fixture != '' }}
     uses: ./.github/workflows/native-desktop.yml
     with:
       wsl_fixture: true
   linux:
+    outputs:
+      wsl_fixture: ${{ steps.wsl_fixture.outputs.artifact-id }}
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7.0.1
@@ -48,7 +51,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: hyperme-sh/hypermesh-vscode
-          ref: 5b0bfde7bb250cbef075ec29da7a2add44b875ea
+          ref: 75a1315a51bda0b185d2878e7a4695631f26db43
           path: .ci-fixtures/wsl-editor
           persist-credentials: false
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v6
@@ -78,14 +81,20 @@ jobs:
         with:
           go-version: '1.26.5'
           cache: false
-      - name: Assemble the disposable WSL distribution
+      - name: Assemble the disposable desktop fixtures
         run: bash ci/wsl/build.sh .ci-fixtures/wsl-editor "$RUNNER_TEMP"
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - id: wsl_fixture
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: visor-wsl-fixture
           path: ${{ runner.temp }}/visor-wsl.tar
           if-no-files-found: error
           retention-days: 2
+      - name: Embedded preview from VS Code and CLI in a local workspace
+        timeout-minutes: 7
+        run: |
+          preview_image="visor-local-preview:$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          docker run --rm --init --network none "$preview_image" bash /opt/visor-wsl/local_preview.sh
 
   linux-companion-catalog:
     name: Linux companion catalog (${{ matrix.arch }})

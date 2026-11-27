@@ -3,13 +3,14 @@ use base64::{engine::general_purpose::STANDARD, Engine};
 use hypermesh_visor::workspace_runtime::{wsl_distro, wsl_linux_path};
 use serde_json::{json, Value};
 use std::io::{Read, Write};
+use std::num::NonZeroU16;
 use std::time::Duration;
 use uuid::Uuid;
 
 mod input;
 
 const ENDPOINT: &str = "/terminal-task";
-const USAGE: &str = "Usage: hypermesh-companion --terminal-task WORKSPACE [--host DEVICE_ID] context | run REVISION | watch ID [CURSOR] | interact ID [CURSOR] [--take-over] | cancel ID | request";
+const USAGE: &str = "Usage: hypermesh-companion --terminal-task WORKSPACE [--host DEVICE_ID] context | run REVISION | watch ID [CURSOR] | interact ID [CURSOR] [--take-over] | cancel ID | preview-status ID PORT | preview-open ID PORT | preview-close ID PORT PREVIEW_ID | request";
 
 struct Connection<'a> {
     workspace: &'a str,
@@ -230,6 +231,24 @@ pub(crate) fn run(args: Vec<String>) -> Result<bool, String> {
             };
             let scope = connection.exchange(json!({"type":"context"}))?;
             return input::attach(&connection, &scope, id, cursor, take_over);
+        }
+        ("preview-status" | "preview-open" | "preview-close", [id, port, tail @ ..])
+            if tail.len() == usize::from(command == "preview-close") =>
+        {
+            let id = Uuid::parse_str(id).map_err(|_| "Invalid task ID")?;
+            let port = port.parse::<NonZeroU16>().map_err(|_| "Invalid preview port")?;
+            let scope = connection.exchange(json!({"type":"context"}))?;
+            let kind = match command.as_str() {
+                "preview-open" => "preview_open",
+                "preview-close" => "preview_close",
+                _ => "preview_context",
+            };
+            let mut request = action(&scope, kind, id);
+            request["port"] = json!(port);
+            if let [preview] = tail {
+                request["preview_id"] = json!(Uuid::parse_str(preview).map_err(|_| "Invalid preview ID")?);
+            }
+            println!("{}", connection.exchange(request)?);
         }
         ("watch" | "cancel", [id, ..])
             if rest.len() == 1 || command == "watch" && rest.len() == 2 =>

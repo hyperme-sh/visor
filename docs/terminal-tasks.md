@@ -130,3 +130,26 @@ inventory. In the trusted VS Code Remote–SSH workspace, set
 On reconnect, attach by task ID and the last byte cursor. Visor checks the
 expected device and current workspace assignment before returning output or
 accepting input.
+
+
+## Workspace preview
+
+Set `"preview_port": 4173` in the owner-only declaration for a command that
+serves a development app on that loopback port. Start the task, then choose
+**Open workspace preview** in the trusted local or Remote–SSH VS Code workspace.
+Review the task, device, workspace, and declared port. VS Code opens the preview
+in its integrated browser. For Remote–SSH, leave the VS Code local forwarding
+host set to `localhost`.
+
+```sh
+hypermesh-companion --terminal-task "$workspace" preview-status "$task_id" 4173
+hypermesh-companion --terminal-task "$workspace" --host "$device_id" preview-open "$task_id" 4173
+hypermesh-companion --terminal-task "$workspace" --host "$device_id" preview-close "$task_id" 4173 "$preview_id"
+```
+
+The CLI status and editor show the same preview ID. An open request from the
+CLI returns the short-lived loopback link on the machine serving the app.
+Visor expires the link after 90 seconds or earlier when the task ends, the
+preview closes, or local consent or assignment changes. Preview pages may
+load relative same-origin assets through the link. The preview serves HTTP
+GET and HEAD for the declared origin.

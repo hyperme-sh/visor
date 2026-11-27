@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict';
 import { setTimeout as wait } from 'node:timers/promises';
 
-const [port, remote, workspace, cliTask, marker, device] = process.argv.slice(2);
+const [port, remote, workspace, cliTask, marker, device, mode] = process.argv.slice(2);
 const location = device ? `SSH device ${device}` : `WSL ${remote}`;
 const deadline = Date.now() + 300_000;
 let sequence = 0;
@@ -143,48 +143,80 @@ function waitForTask(expected, previous) {
 
 try {
   await connect();
-  const workspaceTitle = device ? `[ssh: ${remote.toLowerCase()}]` : remote.toLowerCase();
+  const workspaceTitle = device ? `[ssh: ${remote.toLowerCase()}]` :
+    remote === 'local' ? workspace.split('/').at(-1) : remote.toLowerCase();
   await until('the remote workspace title', () => evaluate(
     `document.title.toLowerCase().includes(${JSON.stringify(workspaceTitle)})`,
   ), 120_000);
   const trustButtons = '.monaco-dialog-box .monaco-button, .monaco-dialog-box button';
-  await until('the Workspace Trust prompt', async () =>
+  const trustWorkspace = async () =>
     (device && await click(trustButtons, 'Trust Folder & Continue')) ||
-    await click(trustButtons, 'Yes, I trust the authors'), 60_000);
+    await click(trustButtons, 'Yes, I trust the authors');
   const begin = async () => {
-    await until('the installed Hypermesh command in the remote window', async () => {
+    const title = remote === 'local' ? 'connected · access ready' : `${location} · ${workspace} · access ready`;
+    const pickerReady = () => evaluate(
+      `document.querySelector('.quick-input-titlebar')?.innerText.includes(${JSON.stringify(title)})`,
+    );
+    await until('the selected workspace in the trusted Hypermesh task picker', async () => {
+      if (await trustWorkspace()) return false;
+      if (await pickerReady()) return true;
       try {
-        await palette('Hypermesh: Visor terminal task', 6000);
-        return true;
+        await palette('Hypermesh: Visor terminal task', 3000);
+        return await until('the Hypermesh task menu', async () => {
+          if (await trustWorkspace()) return false;
+          return pickerReady();
+        }, 4000);
       } catch {
-        // A palette opened during remote startup has a stale command list.
+        // Startup and trust can dismiss a palette or leave its command list stale.
         await key('Escape', 'Escape', 27);
         return false;
       }
     }, 80_000);
-    const title = `${location} · ${workspace} · access ready`;
-    await until('the selected device or distro and workspace in the task picker', () => evaluate(
-      `document.querySelector('.quick-input-titlebar')?.innerText.includes(${JSON.stringify(title)})`,
-    ));
   };
-  await begin();
-  await pick('Attach to task');
-  await until('the task ID input', () => evaluate(
-    `${quickInputFocused} && document.activeElement.closest('.quick-input-widget').innerText.includes('Task ID and optional output cursor')`,
-  ));
-  await send('Input.insertText', { text: cliTask });
-  await key('Enter', 'Enter', 13);
-  await waitForTask(cliTask);
-  console.log(`VS Code attached to CLI task ${cliTask} in ${location} at ${workspace}`);
+  if (mode === 'preview') {
+    await begin();
+    await pick('Open workspace preview');
+    await until('the preview task ID input', () => evaluate(
+      `${quickInputFocused} && document.activeElement.closest('.quick-input-widget').innerText.includes('Preview task ID')`,
+    ));
+    await send('Input.insertText', { text: cliTask });
+    await key('Enter', 'Enter', 13);
+    await until('the preview scope review', () => click(trustButtons, 'Open Preview'));
+    const previewId = await until('the authorized preview ID', () => evaluate(
+      `document.querySelector('.notifications-toasts')?.innerText.match(/Visor preview ([a-f0-9-]{36}) on device/)?.[1]`,
+    ));
+    await until('the embedded preview page', async () => {
+      const response = await fetch(`http://127.0.0.1:${port}/json/list`, { signal: AbortSignal.timeout(3000) });
+      const pages = await response.json();
+      return pages.some(page => {
+        if (page.title !== marker) return false;
+        const url = new URL(page.url);
+        return url.protocol === 'http:' && ['127.0.0.1', 'localhost'].includes(url.hostname) &&
+          url.port && url.port !== '4173' && /^\/[a-f0-9]{32}\/$/.test(url.pathname);
+      });
+    });
+    console.log(`VS Code displayed the fixture app in preview ${previewId} for ${remote}`);
+    console.log(`VISOR_EDITOR_PREVIEW=${previewId}`);
+  } else {
+    await begin();
+    await pick('Attach to task');
+    await until('the task ID input', () => evaluate(
+      `${quickInputFocused} && document.activeElement.closest('.quick-input-widget').innerText.includes('Task ID and optional output cursor')`,
+    ));
+    await send('Input.insertText', { text: cliTask });
+    await key('Enter', 'Enter', 13);
+    await waitForTask(cliTask);
+    console.log(`VS Code attached to CLI task ${cliTask} in ${location} at ${workspace}`);
 
-  await begin();
-  await pick('Run declared task');
-  await until('the task review prompt', () =>
-    click('.monaco-dialog-box .monaco-button, .monaco-dialog-box button', 'Run Task'));
-  const editorTask = await waitForTask(undefined, cliTask);
-  assert.notEqual(editorTask, cliTask);
-  console.log(`VS Code ran task ${editorTask} in ${location} at ${workspace}`);
-  console.log(`VISOR_EDITOR_TASK=${editorTask}`);
+    await begin();
+    await pick('Run declared task');
+    await until('the task review prompt', () =>
+      click('.monaco-dialog-box .monaco-button, .monaco-dialog-box button', 'Run Task'));
+    const editorTask = await waitForTask(undefined, cliTask);
+    assert.notEqual(editorTask, cliTask);
+    console.log(`VS Code ran task ${editorTask} in ${location} at ${workspace}`);
+    console.log(`VISOR_EDITOR_TASK=${editorTask}`);
+  }
 } catch (error) {
   if (socket?.readyState === WebSocket.OPEN) {
     console.error(await evaluate(`JSON.stringify({

@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict';
 import { setTimeout as wait } from 'node:timers/promises';
 
-const [port, remote, workspace, cliTask, marker, device, mode] = process.argv.slice(2);
+const [port, remote, workspace, cliTask, marker, device, mode, lease] = process.argv.slice(2);
 const location = device ? `SSH device ${device}` : `WSL ${remote}`;
 const deadline = Date.now() + 300_000;
 let sequence = 0;
@@ -143,8 +143,8 @@ function waitForTask(expected, previous) {
 
 try {
   await connect();
-  const workspaceTitle = device ? `[ssh: ${remote.toLowerCase()}]` :
-    remote === 'local' ? workspace.split('/').at(-1) : remote.toLowerCase();
+  const workspaceTitle = remote === 'local' ? workspace.split('/').at(-1) :
+    device ? `[ssh: ${remote.toLowerCase()}]` : remote.toLowerCase();
   await until('the remote workspace title', () => evaluate(
     `document.title.toLowerCase().includes(${JSON.stringify(workspaceTitle)})`,
   ), 120_000);
@@ -153,7 +153,10 @@ try {
     (device && await click(trustButtons, 'Trust Folder & Continue')) ||
     await click(trustButtons, 'Yes, I trust the authors');
   const begin = async () => {
-    const title = remote === 'local' ? 'connected · access ready' : `${location} · ${workspace} · access ready`;
+    const cloud = mode === 'cloud';
+    const command = cloud ? 'Hypermesh: Cloud workspace task' : 'Hypermesh: Visor terminal task';
+    const title = cloud ? `Cloud worker ${device} · generation 1 · task ${cliTask}` :
+      remote === 'local' ? 'connected · access ready' : `${location} · ${workspace} · access ready`;
     const pickerReady = () => evaluate(
       `document.querySelector('.quick-input-titlebar')?.innerText.includes(${JSON.stringify(title)})`,
     );
@@ -161,7 +164,7 @@ try {
       if (await trustWorkspace()) return false;
       if (await pickerReady()) return true;
       try {
-        await palette('Hypermesh: Visor terminal task', 3000);
+        await palette(command, 3000);
         return await until('the Hypermesh task menu', async () => {
           if (await trustWorkspace()) return false;
           return pickerReady();
@@ -173,7 +176,24 @@ try {
       }
     }, 80_000);
   };
-  if (mode === 'preview') {
+  if (mode === 'cloud') {
+    await begin();
+    await pick('Run declared workspace tool');
+    await until('the cloud lease and target in the tool confirmation', () => evaluate(
+      `[...document.querySelectorAll('.monaco-dialog-box')].some(element =>
+        element.getBoundingClientRect().width && element.innerText.includes(${JSON.stringify(workspace)}) &&
+        element.innerText.includes(${JSON.stringify(lease)}) && element.innerText.includes('check-json manifest.json'))`,
+    ));
+    await until('the workspace tool approval', () => click(trustButtons, 'Run Tool'));
+    await until('the cloud workspace tool output in VS Code', () => evaluate(
+      `[...document.querySelectorAll('.view-lines')].some(element => {
+        const text = element.innerText.replace(/\\u00a0/g, ' ');
+        return text.includes(${JSON.stringify(marker)}) && text.includes(${JSON.stringify(cliTask)}) &&
+          text.includes('completed');
+      })`,
+    ));
+    console.log(`VS Code ran the admitted JSON check for task ${cliTask} on device ${device}`);
+  } else if (mode === 'preview') {
     await begin();
     await pick('Open workspace preview');
     await until('the preview task ID input', () => evaluate(

@@ -4,8 +4,8 @@ ARG CLOUD_BASE=debian:trixie-slim@sha256:f6b08b09a05725f9431502d3b5714f5c4576e82
 FROM golang:1.26.5-alpine@sha256:0178a641fbb4858c5f1b48e34bdaabe0350a330a1b1149aabd498d0699ff5fb2 AS conductor
 RUN apk add --no-cache curl
 WORKDIR /source
-RUN curl --fail --silent --show-error --location https://codeload.github.com/hyperme-sh/conductor/tar.gz/7545fc2eded4429a2bfa14fdc9b44f8a5f3a6663 -o source.tar.gz && \
-    echo '80014b6b65d3eb10f83568043e0e3090db04534034ce11fb27b2f86dda5b5905  source.tar.gz' | sha256sum -c - && \
+RUN curl --fail --silent --show-error --location https://codeload.github.com/hyperme-sh/conductor/tar.gz/72cd70d2c8e9e518c6c4e1319292791a73913b0e -o source.tar.gz && \
+    echo '9ad4e35acbc4108b6f99ae47c6bf9af433c463485d7c35502b39ed873a3da4ef  source.tar.gz' | sha256sum -c - && \
     tar xzf source.tar.gz --strip-components=1 && \
     CGO_ENABLED=0 go build -buildvcs=false -mod=readonly -trimpath -o /conductor ./cmd/conductor && \
     /conductor help | grep -F capability-review

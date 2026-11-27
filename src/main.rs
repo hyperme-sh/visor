@@ -49,6 +49,18 @@ fn main() -> ExitCode {
         }
         return worker_status::run();
     }
+    #[cfg(target_os = "linux")]
+    if args.peek().is_some_and(|arg| arg == "workspace-task") {
+        args.next();
+        return match hypermesh_visor::cloud_workspace::cli(&args.collect::<Vec<_>>(), io::stdin().lock(), io::stdout().lock()) {
+            Ok(true) => ExitCode::SUCCESS,
+            Ok(false) => ExitCode::FAILURE,
+            Err(error) => {
+                eprintln!("{error}");
+                ExitCode::FAILURE
+            }
+        };
+    }
     if args.peek().is_some_and(|arg| arg == "catalog") {
         args.next();
         return match hypermesh_visor::tool_catalog::run(args, io::stdout().lock()) {
@@ -215,6 +227,14 @@ fn main() -> ExitCode {
         Ok(mut state) => {
             state.apply_companion_poll_env();
             state.apply_host_bridge_env();
+            #[cfg(target_os = "linux")]
+            if std::env::var_os("HYPERMESH_WORKSPACE_LEASE_FILE").is_some() {
+                let Some(child) = managed.as_ref() else {
+                    eprintln!("Cloud workspace lease requires bundled Conductor");
+                    return ExitCode::from(2);
+                };
+                state.enable_cloud_workspace(child.socket_path().to_owned());
+            }
             if let Err(message) = state.apply_managed_guest_env() {
                 eprintln!("hypermesh-visor: {message}");
                 return ExitCode::from(2);

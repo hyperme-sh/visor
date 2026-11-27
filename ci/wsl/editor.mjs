@@ -153,22 +153,25 @@ try {
     (device && await click(trustButtons, 'Trust Folder & Continue')) ||
     await click(trustButtons, 'Yes, I trust the authors');
   const begin = async () => {
-    await until('the installed Hypermesh command in the workspace', async () => {
-      // Remote ports and the workspace can each present a trust prompt during startup.
+    const title = remote === 'local' ? 'connected · access ready' : `${location} · ${workspace} · access ready`;
+    const pickerReady = () => evaluate(
+      `document.querySelector('.quick-input-titlebar')?.innerText.includes(${JSON.stringify(title)})`,
+    );
+    await until('the selected workspace in the trusted Hypermesh task picker', async () => {
       if (await trustWorkspace()) return false;
+      if (await pickerReady()) return true;
       try {
-        await palette('Hypermesh: Visor terminal task', 6000);
-        return true;
+        await palette('Hypermesh: Visor terminal task', 3000);
+        return await until('the Hypermesh task menu', async () => {
+          if (await trustWorkspace()) return false;
+          return pickerReady();
+        }, 4000);
       } catch {
-        // A palette opened during remote startup has a stale command list.
+        // Startup and trust can dismiss a palette or leave its command list stale.
         await key('Escape', 'Escape', 27);
         return false;
       }
     }, 80_000);
-    const title = remote === 'local' ? 'connected · access ready' : `${location} · ${workspace} · access ready`;
-    await until('the selected device or distro and workspace in the task picker', () => evaluate(
-      `document.querySelector('.quick-input-titlebar')?.innerText.includes(${JSON.stringify(title)})`,
-    ));
   };
   if (mode === 'preview') {
     await begin();
